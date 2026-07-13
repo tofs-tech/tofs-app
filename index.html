@@ -9,7 +9,7 @@
 <link rel="apple-touch-icon" href="apple-touch-icon.png">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="mobile-web-app-capable" content="yes">
-<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
 <meta name="apple-mobile-web-app-title" content="TOFS">
 <style>
   :root{
@@ -630,7 +630,7 @@ function showLogin(msg){
   </div>`;
   const em=ov.querySelector('#liEmail'),pw=ov.querySelector('#liPw'),er=ov.querySelector('#liErr'),bt=ov.querySelector('#liBtn');
   try{em.value=localStorage.getItem(KEY+'-email')||'';}catch(e){}
-  setTimeout(()=>{(em.value?pw:em).focus();},50);
+  if(!IS_TOUCH)setTimeout(()=>{(em.value?pw:em).focus();},50);
   const go=async()=>{er.textContent='';bt.disabled=true;bt.textContent='확인 중…';
     try{const j=await sbAuth('token?grant_type=password',{email:em.value.trim(),password:pw.value});
       setSession(j);try{localStorage.setItem(KEY+'-email',em.value.trim());}catch(e){}
@@ -671,6 +671,8 @@ document.addEventListener('visibilitychange',async()=>{
       DB=row.data;lastSyncedAt=row.updated_at;render();setSync('ok','저장됨');}}catch(e){}});
 
 /* ===== helpers ===== */
+/* iOS 홈화면(설치형) 앱에서 자동 포커스가 키보드를 막는 버그가 있어 터치 기기는 자동 포커스 안 함 */
+const IS_TOUCH='ontouchstart' in window;
 const esc=s=>String(s==null?'':s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 const won=n=>'₩'+(Number(n)||0).toLocaleString('ko-KR');
 const wonp=n=>(Number(n)||0).toLocaleString('ko-KR')+'원';
@@ -993,7 +995,7 @@ function showCopyModal(t,label){
     <div style="padding:16px 22px"><textarea readonly style="width:100%;min-height:110px;font-family:inherit;font-size:13px;color:var(--ink);background:var(--surface-2);border:1px solid var(--line-strong);border-radius:9px;padding:10px">${esc(t)}</textarea></div>
     <div class="modal-foot"><div class="right"><button class="btn green" id="ccClose">닫기</button></div></div></div>`;
   document.body.appendChild(ov);
-  const ta=ov.querySelector('textarea');ta.focus();ta.select();
+  const ta=ov.querySelector('textarea');if(!IS_TOUCH){ta.focus();ta.select();}
   const close=()=>ov.remove();
   ov.addEventListener('mousedown',e=>{if(e.target===ov)close();});
   ov.querySelector('#ccClose').onclick=close;
@@ -1765,7 +1767,7 @@ function openBankImport(){
   ta.oninput=()=>{const t=ta.value.trim();
     if(!t){prev.innerHTML='';sum.textContent='';ok.disabled=true;items=[];return;}
     show(parseBankRows(parseGridText(t)));};
-  setTimeout(()=>ta.focus(),50);
+  if(!IS_TOUCH)setTimeout(()=>ta.focus(),50);
   ov.querySelectorAll('[data-bimode]').forEach(b=>b.onclick=()=>{
     ov.querySelectorAll('[data-bimode]').forEach(x=>x.classList.toggle('on',x===b));
     ov.querySelector('#biPaste').hidden=b.dataset.bimode!=='paste';
@@ -2436,7 +2438,7 @@ function openPricePicker(onPick){
     b.textContent='✓';b.disabled=true;setTimeout(()=>{b.textContent='담기';b.disabled=false;},700);
   });
   qi.oninput=()=>{list.innerHTML=build(qi.value.trim());wire();};
-  wire();qi.focus();
+  wire();if(!IS_TOUCH)qi.focus();
 }
 
 /* ===== 계약서 (contracts) ===== */
@@ -2796,7 +2798,7 @@ function openForm(type,existing){
     else{const p=proj();obj.id=uid();(p[type]=p[type]||[]).push(obj);}
     save();close();render();
   };
-  setTimeout(()=>{const el=overlayEl?.querySelector('input,select,textarea');el&&el.focus();},30);
+  if(!IS_TOUCH)setTimeout(()=>{const el=overlayEl?.querySelector('input,select,textarea');el&&el.focus();},30);
 }
 
 /* ===== new project ===== */
