@@ -5,6 +5,12 @@
 <meta name="theme-color" content="#232B3C">
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/variable/pretendardvariable-dynamic-subset.min.css">
 <title>TOFS</title>
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="TOFS">
 <style>
   :root{
     --bg:#EAEEF5; --surface:#FFFFFF; --surface-2:#F4F7FB; --surface-3:#E9EEF5;
@@ -2807,6 +2813,8 @@ function initTheme(){let t=null;try{t=localStorage.getItem(KEY+'-theme');}catch(
 
 /* ===== init ===== */
 document.getElementById('newProjBtn').onclick=newProject;
+/* PWA — 홈 화면 설치형 앱 (https에서만 동작, 로컬 파일은 무시) */
+if('serviceWorker' in navigator&&location.protocol==='https:'){addEventListener('load',()=>{navigator.serviceWorker.register('sw.js').catch(()=>{});});}
 initTheme();
 (async function boot(){
   try{const s=JSON.parse(localStorage.getItem(SES_KEY)||'null');if(s&&s.refresh_token)session=s;}catch(e){}
