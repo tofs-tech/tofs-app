@@ -574,6 +574,12 @@ function coLogo(baseW,color){
   if(co.logo)return`<img src="${co.logo}" style="width:${w}px;max-width:100%" alt="logo">`;
   return LOGO_SVG(color||'#4A7C50',w);
 }
+/* 문서 본문용 로고 블록 — 회사 설정의 위치(왼쪽/가운데/오른쪽/안 넣음) 반영 */
+function docLogo(pos,baseW,mt){
+  if(pos==='안 넣음')return'';
+  const al=pos==='가운데'?'center':pos==='오른쪽'?'right':'left';
+  return`<div style="text-align:${al};${mt?`margin-top:${mt}px;`:''}">${coLogo(baseW)}</div>`;
+}
 
 /* ===== storage (로컬 캐시 + Supabase 클라우드 동기화) ===== */
 const KEY='tofs-hyunjang-v3';
@@ -654,7 +660,10 @@ async function enterApp(){
   DB.inbox=DB.inbox||[]; DB.inboxSeen=DB.inboxSeen||[]; /* 은행내역 미분류 인박스 */
   DB.coExpenses=DB.coExpenses||[]; /* 회사 공통 지출 (현장 비종속) */
   DB.vendors=DB.vendors||[]; /* 거래 업체 리스트 */
-  DB.homeMemo=DB.homeMemo||''; /* 홈 자유 메모 */
+  DB.workersDB=DB.workersDB||[]; /* 자주 일하는 작업자 명부 (회사 공용) */
+  DB.homeMemo=DB.homeMemo||''; /* 홈 자유 메모 (구버전) */
+  /* 날짜별 홈 메모 — 최초 전환 시 기존 자유 메모를 오늘 날짜로 옮겨 보존 */
+  if(!DB.homeMemos){DB.homeMemos={};if(DB.homeMemo)DB.homeMemos[todayStr()]=DB.homeMemo;}
   /* 기본 자재는 최초 1회 자동 내장 — 이후 사용자가 자유롭게 수정·삭제 */
   if(DB.priceSeedV!==2){loadPricePreset(true);DB.priceSeeded=true;DB.priceSeedV=2;save();}
   DB.projects.forEach(pr=>{pr.estimates=pr.estimates||[];pr.contracts=pr.contracts||[];});
@@ -820,6 +829,7 @@ const TABS=[
   {id:'price',label:'자재·노무'},
   {id:'drive',label:'드라이브'},
   {id:'expenses',label:'지출'},
+  {id:'laborco',label:'노무비'},
   {id:'settle',label:'정산',badge:'대표 전용',gray:1},
 ];
 
@@ -835,8 +845,8 @@ function render(){ refreshTrades(); renderProjSelect(); renderHead(); renderTabs
   /* 홈에서는 새 프로젝트 버튼 숨김 (회사 전체 현황 화면) */
   const npb=document.getElementById('newProjBtn');if(npb)npb.style.display=state.tab==='home'?'none':'';
   /* 홈·단가 탭은 회사 전체 화면이라 프로젝트 헤더 숨김 */
-  document.getElementById('phead').style.display=(state.tab==='home'||state.tab==='price'||state.tab==='vendors')?'none':'';
-  ({home:vHome,schedule:vSchedule,est:vEstimates,contract:vContract,materials:vMaterials,orders:vOrders,vendors:vVendors,price:vPrice,drive:vDrive,expenses:vExpenses,settle:vSettle}[state.tab])(c);
+  document.getElementById('phead').style.display=(state.tab==='home'||state.tab==='price'||state.tab==='vendors'||state.tab==='laborco')?'none':'';
+  ({home:vHome,schedule:vSchedule,est:vEstimates,contract:vContract,materials:vMaterials,orders:vOrders,vendors:vVendors,price:vPrice,drive:vDrive,expenses:vExpenses,laborco:vLaborCo,settle:vSettle}[state.tab])(c);
 }
 const isArchived=p=>p.info.status==='완료'||p.info.status==='취소';
 function renderProjSelect(){const s=document.getElementById('projSelect');
@@ -870,7 +880,6 @@ function renderHead(){
       <div>
         ${hrow('기간', i.start&&i.end?`${fdateF(i.start)} ~ ${fdateF(i.end)} <span class="sub">(총 ${weeks(i.start,i.end)}주)</span>`:'—')}
         ${hrow('연락처',i.contact)} ${hrow('출입비밀번호',i.entryNo)}
-        <div class="row"><div class="k">상황 메모</div><input class="memoinput" id="statusMemo" placeholder="상황 메모 (예: 입주 8/20 예정)" value="${esc(i.statusMemo)}"></div>
       </div>
     </div>
     <div class="phead-actions">
@@ -882,8 +891,6 @@ function renderHead(){
   document.querySelector('[data-edit-info]').onclick=()=>openForm('info',i);
   document.getElementById('editInfoBtn').onclick=()=>openForm('info',i);
   document.querySelectorAll('[data-goto]').forEach(b=>b.onclick=()=>{state.tab=b.dataset.goto;if(b.dataset.gosub)state.siteSub=b.dataset.gosub;render();});
-  const sm=document.getElementById('statusMemo');
-  sm.onchange=()=>{i.statusMemo=sm.value;save();};
   document.getElementById('copyInfo').onclick=()=>{const t=`${i.name}\n주소: ${i.address||'-'}\n출입비밀번호: ${i.entryNo||'-'}`;shareText(t,'현장정보');};
   document.getElementById('copySched').onclick=openScheduleCopy;
 }
@@ -1059,10 +1066,11 @@ function vSchedule(c){
   const p=proj();
   /* 현장관리 = 일정 + 현장일지·사진 + 마감재 + 발주 (하위 탭) */
   const raw=state.siteSub||'sched';
-  const sub=raw==='sched'?'sched':(raw==='mat'?'mat':(raw==='ord'?'ord':'site')); /* 구버전 log/photo 값은 site로 흡수 */
+  const sub=raw==='sched'?'sched':(raw==='mat'?'mat':(raw==='ord'?'ord':(raw==='labor'?'labor':'site'))); /* 구버전 log/photo 값은 site로 흡수 */
   const subtabs=`<div class="subtabs">
     <button class="${sub==='sched'?'on':''}" data-sub="sched">일정</button>
     <button class="${sub==='site'?'on':''}" data-sub="site">현장일지 · 사진</button>
+    <button class="${sub==='labor'?'on':''}" data-sub="labor">노무비</button>
     <button class="${sub==='mat'?'on':''}" data-sub="mat">마감재</button>
     <button class="${sub==='ord'?'on':''}" data-sub="ord">발주</button>
   </div>`;
@@ -1070,7 +1078,7 @@ function vSchedule(c){
     c.innerHTML=subtabs+`<div id="siteBody"></div>`;
     c.querySelectorAll('[data-sub]').forEach(b=>b.onclick=()=>{state.siteSub=b.dataset.sub;render();});
     const body=document.getElementById('siteBody');
-    if(sub==='mat')vMaterials(body); else if(sub==='ord')vOrders(body,true); else renderSiteSub(body,p);
+    if(sub==='mat')vMaterials(body); else if(sub==='ord')vOrders(body,true); else if(sub==='labor')vLabor(body,p); else renderSiteSub(body,p);
     return;
   }
   const today=todayStr();
@@ -1104,8 +1112,9 @@ function vSchedule(c){
   <div class="todos">
     <div class="card"><div class="card-h"><span class="ct">해야할 일</span><span class="cs">${todos.filter(t=>!t.done).length}개</span></div>
       <div class="pad" style="padding-top:8px">
-        <div class="todo-list">${todos.filter(t=>!t.done).map(todoHtml).join('')||`<div class="sub" style="padding:10px">할 일이 없습니다.</div>`}</div>
+        <div class="todo-list">${todos.filter(t=>!t.done).slice().sort((a,b)=>(a.date||'9999').localeCompare(b.date||'9999')).map(todoHtml).join('')||`<div class="sub" style="padding:10px">할 일이 없습니다.</div>`}</div>
         <div class="addbar"><input class="grow" id="todoInput" placeholder="새 항목 (예: 거실 콘센트 위치 확인)">
+          <input type="date" id="todoDate" value="${todayStr()}" style="width:135px" title="할 일 날짜 — 어제·오늘 것은 홈에도 표시됩니다">
           <input id="todoTrade" list="dl-trades" placeholder="공정" style="width:110px"><button class="btn green" id="todoAdd">추가</button></div>
       </div></div>
     <div class="card"><div class="card-h"><span class="ct">완료된 일</span><span class="cs">${todos.filter(t=>t.done).length}개</span></div>
@@ -1116,8 +1125,8 @@ function vSchedule(c){
   c.querySelectorAll('[data-qadd]').forEach(el=>el.onclick=e=>{if(e.target.closest('[data-e-type]'))return;openQuickPhase(el.dataset.qadd);});
   c.querySelectorAll('.subtabs [data-sub]').forEach(b=>b.onclick=()=>{state.siteSub=b.dataset.sub;render();});
   c.querySelectorAll('#schSeg [data-sv]').forEach(b=>b.onclick=()=>{state.schedView=b.dataset.sv;render();});
-  const ti=document.getElementById('todoInput'),tt=document.getElementById('todoTrade');
-  const addTodo=()=>{if(!ti.value.trim())return;p.todos=p.todos||[];const tr=tt.value.trim();addTrade(tr);p.todos.push({id:uid(),text:ti.value.trim(),done:false,trade:tr,tag:'현장',author:p.info.manager||''});save();render();};
+  const ti=document.getElementById('todoInput'),tt=document.getElementById('todoTrade'),tdd=document.getElementById('todoDate');
+  const addTodo=()=>{if(!ti.value.trim())return;p.todos=p.todos||[];const tr=tt.value.trim();addTrade(tr);p.todos.push({id:uid(),text:ti.value.trim(),done:false,trade:tr,tag:'현장',author:p.info.manager||'',date:tdd.value||todayStr()});save();render();};
   document.getElementById('todoAdd').onclick=addTodo; ti.onkeydown=e=>{if(e.key==='Enter')addTodo();};
   c.querySelectorAll('[data-todo]').forEach(b=>b.onclick=()=>{const t=p.todos.find(x=>x.id===b.dataset.todo);t.done=!t.done;save();render();});
   c.querySelectorAll('[data-todo-del]').forEach(b=>b.onclick=()=>{p.todos=p.todos.filter(x=>x.id!==b.dataset.todoDel);save();render();});
@@ -1250,7 +1259,7 @@ function openTradesEditor(onDone){
 }
 function todoHtml(t){return`<div class="todo ${t.done?'done':''}">
   <div class="cb" data-todo="${t.id}">${t.done?svg(IC.check):''}</div>
-  <div style="flex:1"><div class="tx">${esc(t.text)}</div><div class="meta">${t.trade?`<span class="tag">${esc(t.trade)}</span>`:''}${t.author?`작성 ${esc(t.author)}`:''}</div></div>
+  <div style="flex:1"><div class="tx">${esc(t.text)}</div><div class="meta">${t.date?`<span class="num">📅 ${fdate(t.date)}</span>`:''}${t.trade?`<span class="tag">${esc(t.trade)}</span>`:''}${t.author?`작성 ${esc(t.author)}`:''}</div></div>
   <button class="icon-btn" style="width:26px;height:26px;border:none;background:none" data-todo-del="${t.id}">${svg(IC.x)}</button></div>`;}
 function shiftMonth(ym,d){let[y,m]=ym.split('-').map(Number);m+=d;if(m<1){m=12;y--;}if(m>12){m=1;y++;}return`${y}-${String(m).padStart(2,'0')}`;}
 
@@ -1297,7 +1306,10 @@ function printSchedule(){
     }
     rows+=`<tr><td class="pg-no">${r+1}</td><td class="pg-ph"><span class="dot" style="background:${col}"></span>${esc(ph)}</td>${cells}<td class="pg-bigo"></td></tr>`;
   }
-  const html=`<div class="pg-hd">
+  const co=CO();
+  const schLogo=docLogo(co.schedLogoPos||'오른쪽',110);
+  const html=`${schLogo?`<div style="margin-bottom:8px">${schLogo}</div>`:''}
+    <div class="pg-hd">
       <div class="pg-title">공 사 일 정 표</div>
       <table class="pg-meta">
         <tr><td class="k">공사명</td><td class="v">${esc(i.name)}</td><td class="k">공사기간</td><td class="v">${fdateF(start)} ~ ${fdateF(end)} (${weeks(start,end)}주)</td></tr>
@@ -1318,7 +1330,7 @@ function printSchedule(){
       <span><i style="background:rgba(210,75,62,.20)"></i>지연</span>
       <span><i class="pg-we"></i>주말·공휴일</span>
     </div>
-    <div class="pg-foot">※ 상기 공사일정은 현장 상황에 따라 일부 공정에 변동이 있을 수 있습니다.　—　tofs studio</div>`;
+    <div class="pg-foot">※ 상기 공사일정은 현장 상황에 따라 일부 공정에 변동이 있을 수 있습니다.</div>`;
   showPreview('공사 일정표',html,true);
 }
 
@@ -1441,6 +1453,7 @@ function orderCard(p,po){
       <label class="sub" style="display:inline-flex;align-items:center;gap:5px;cursor:pointer;white-space:nowrap"><input type="checkbox" data-sp-toggle ${sp?'checked':''}> 금액 표시</label>
       <div class="spacer" style="flex:1"></div>
       <button class="btn sm no-print" data-print-po="${esc(po)}">${svg(IC.print)}발주서</button>
+      <button class="btn sm no-print" data-xls-po="${esc(po)}">엑셀</button>
       <button class="icon-btn no-print" data-del-po="${esc(po)}" title="발주서 삭제">${svg(IC.trash)}</button>
     </div>
     <div class="tbl-wrap"><table class="ordtable"><thead><tr>
@@ -1499,6 +1512,7 @@ function wireOrders(c,p){
   c.querySelectorAll('[data-delrow]').forEach(b=>b.onclick=()=>{p.orders=p.orders.filter(o=>o.id!==b.dataset.delrow);save();render();});
   c.querySelectorAll('[data-del-po]').forEach(b=>b.onclick=()=>{if(confirm('이 발주서를 삭제할까요?')){p.orders=p.orders.filter(o=>o.po!==b.dataset.delPo);save();render();}});
   c.querySelectorAll('[data-print-po]').forEach(b=>b.onclick=()=>printOrder(b.dataset.printPo));
+  c.querySelectorAll('[data-xls-po]').forEach(b=>b.onclick=()=>exportOrderXlsx(b.dataset.xlsPo));
 }
 function cssAttr(s){return String(s).replace(/"/g,'\\"');}
 function printOrder(po){
@@ -1513,7 +1527,8 @@ function printOrder(po){
   <tr class="dt2-tot"><td></td><td colspan="2">총 ${items.length}개 품목</td><td class="n">${numf(qtySum)}</td><td class="c">-</td>${sp?`<td></td><td class="n">₩ ${numf(total)}</td>`:`<td></td>`}</tr>
   </tbody></table>
   <div class="foot">※ 상기와 같이 발주합니다.${sp?'':'<br>※ 단가·금액은 별도 견적서에 따릅니다.'}</div>
-  <div class="foot" style="margin-top:36px;text-align:right;color:#333">발주처 : <b style="color:#2b402f">${esc(co.name||'')}</b> &nbsp;&nbsp; (인)</div>`;
+  <div class="foot" style="margin-top:36px;text-align:right;color:#333">발주처 : <b style="color:#2b402f">${esc(co.name||'')}</b> &nbsp;&nbsp; (인)</div>
+  ${docLogo(co.poLogoPos||'왼쪽',130,30)}`;
   showPreview('발주서',html);
 }
 
@@ -1521,29 +1536,52 @@ function printOrder(po){
 /* 현장일지 피드 — 일지를 쓰면서 사진을 함께 첨부, 날짜별로 정리 */
 function renderSiteSub(body,p){
   const logs=(p.logs||[]),legacy=(p.photos||[]); /* legacy = 예전 단독 업로드 사진 (계속 표시) */
+  const exps=(p.expenses||[]),wks=(p.workers||[]);
   const attachedN=logs.reduce((s,l)=>s+((l.photos||[]).length),0);
-  const dates=[...new Set([...logs.map(l=>l.date),...legacy.map(ph=>ph.date)])].filter(Boolean).sort().reverse();
+  const dates=[...new Set([...logs.map(l=>l.date),...legacy.map(ph=>ph.date),...exps.map(e=>e.date),...wks.map(w=>w.date)])].filter(Boolean).sort().reverse();
   const legacyCell=ph=>`<div class="photo"><img src="${ph.dataUrl}" alt="${esc(ph.caption||'')}" data-lzoom>
     <button class="del" data-pdel="${ph.id}">${svg(IC.trash)}</button>
     <div class="cap"><span class="tag">${esc(ph.category)}</span><div class="d num">${fdateF(ph.date)}</div></div></div>`;
   const sections=dates.map(d=>{
     const dl=logs.filter(l=>l.date===d);
     const dp=legacy.filter(ph=>ph.date===d);
-    if(!dl.length&&!dp.length)return'';
+    const de=exps.filter(e=>e.date===d);
+    const dw=wks.filter(w=>w.date===d);
+    if(!dl.length&&!dp.length&&!de.length&&!dw.length)return'';
     const pn=dp.length+dl.reduce((s,l)=>s+((l.photos||[]).length),0);
+    const eSum=de.reduce((s,e)=>s+(+e.amount||0),0);
+    const wSum=dw.reduce((s,w)=>s+(+w.labor||0)+(+w.expense||0),0);
     return `<div class="card" style="margin-bottom:14px">
-      <div class="card-h"><span class="ct num">${fdateF(d)}</span><span class="cs">${[dl.length?`일지 ${dl.length}건`:'',pn?`사진 ${pn}장`:''].filter(Boolean).join(' · ')}</span></div>
+      <div class="card-h"><span class="ct num">${fdateF(d)}</span><span class="cs">${[dl.length?`일지 ${dl.length}건`:'',pn?`사진 ${pn}장`:'',dw.length?`작업자 ${dw.length}명`:'',de.length?`지출 ${won(eSum)}`:''].filter(Boolean).join(' · ')}</span>
+        <div class="spacer" style="flex:1"></div>
+        <div class="no-print" style="display:flex;gap:6px"><button class="btn sm" data-dayworker="${d}">👷 작업자</button><button class="btn sm" data-dayexp="${d}">💳 지출</button></div></div>
       ${dl.map(l=>`<div class="pad" style="padding-bottom:8px">
         <div style="display:flex;align-items:center;gap:8px"><b>${esc(l.title)}</b><span class="sub" style="font-size:11.5px">${esc(l.author||'')}</span>
           <div class="row-actions no-print" style="margin-left:auto;opacity:.5"><button class="icon-btn" data-e-type="logs" data-e-id="${l.id}" title="수정">${svg(IC.edit)}</button><button class="icon-btn" data-d-type="logs" data-d-id="${l.id}" title="삭제">${svg(IC.trash)}</button></div></div>
         <div style="white-space:pre-wrap;color:var(--muted);margin-top:5px">${esc(l.body)}</div>
         ${(l.photos||[]).length?`<div class="pgrid" style="margin-top:10px">${l.photos.map(du=>`<div class="photo"><img src="${du}" data-lzoom></div>`).join('')}</div>`:''}
       </div>`).join('')}
+      ${dw.length?`<div class="pad" style="padding-top:4px;padding-bottom:8px">
+        <div class="sub" style="font-size:11px;font-weight:700;letter-spacing:.04em;margin-bottom:4px">👷 작업자 ${dw.length}명 · 노무비+경비 ${won(wSum)}</div>
+        ${dw.map(w=>{const l=+w.labor||0,net=l-Math.round(l*0.033);return`<div style="display:flex;align-items:center;gap:8px;font-size:12.5px;padding:3px 0;flex-wrap:wrap">
+          <b>${esc(w.name)}</b>${w.trade?`<span class="tag">${esc(w.trade)}</span>`:''}
+          <span class="sub num">${l?`노무비 ${numf(l)} (3.3% 공제 후 ${numf(net)})`:''}${+w.expense?` · 경비 ${numf(+w.expense)}`:''}</span>
+          <div class="row-actions no-print" style="margin-left:auto;opacity:.5"><button class="icon-btn" data-e-type="workers" data-e-id="${w.id}" title="수정">${svg(IC.edit)}</button><button class="icon-btn" data-d-type="workers" data-d-id="${w.id}" title="삭제">${svg(IC.trash)}</button></div></div>`;}).join('')}
+      </div>`:''}
+      ${de.length?`<div class="pad" style="padding-top:4px;padding-bottom:10px">
+        <div class="sub" style="font-size:11px;font-weight:700;letter-spacing:.04em;margin-bottom:4px">💳 그날 지출 ${de.length}건 · ${won(eSum)} <span style="font-weight:500">— 지출 탭과 자동 연동</span></div>
+        ${de.map(e=>`<div style="display:flex;align-items:center;gap:8px;font-size:12.5px;padding:3px 0;flex-wrap:wrap">
+          <span class="tag">${esc(e.kind||'기타')}</span><span>${esc(e.vendor||e.desc||'—')}</span>${e.vendor&&e.desc?`<span class="sub">${esc(e.desc)}</span>`:''}
+          <b class="num" style="margin-left:auto">${won(e.amount)}</b>
+          <div class="row-actions no-print" style="opacity:.5"><button class="icon-btn" data-e-type="expenses" data-e-id="${e.id}" title="수정">${svg(IC.edit)}</button><button class="icon-btn" data-d-type="expenses" data-d-id="${e.id}" title="삭제">${svg(IC.trash)}</button></div></div>`).join('')}
+      </div>`:''}
       ${dp.length?`<div class="pad" style="${dl.length?'padding-top:2px':''}"><div class="pgrid">${dp.map(legacyCell).join('')}</div></div>`:''}
     </div>`;}).join('');
-  body.innerHTML=`<div class="vhead"><div><div class="t">현장일지 · 사진</div><div class="d">일지 ${logs.length}건 · 사진 ${attachedN+legacy.length}장 — 일지를 쓰면서 사진을 함께 첨부하세요.</div></div><div class="spacer"></div>
+  body.innerHTML=`<div class="vhead"><div><div class="t">현장일지 · 사진</div><div class="d">일지 ${logs.length}건 · 사진 ${attachedN+legacy.length}장 — 일지와 함께 그날 작업자·지출도 기록하세요. 지출은 지출 탭과 연동됩니다.</div></div><div class="spacer"></div>
     ${addBtn('logs','일지 작성')}</div>
-  ${sections||`<div class="card">${emptyB('아직 현장일지가 없습니다. 일지를 쓰면서 사진도 함께 첨부할 수 있어요.',addBtn('logs','일지 작성'))}</div>`}`;
+  ${sections||`<div class="card">${emptyB('아직 기록이 없습니다. 일지를 쓰거나, 작업자·지출을 등록해 보세요.',addBtn('logs','일지 작성'))}</div>`}`;
+  body.querySelectorAll('[data-dayexp]').forEach(b=>b.onclick=()=>openForm('expenses',null,{date:b.dataset.dayexp}));
+  body.querySelectorAll('[data-dayworker]').forEach(b=>b.onclick=()=>openWorkerCheck(b.dataset.dayworker));
   body.querySelectorAll('[data-pdel]').forEach(b=>b.onclick=()=>{if(confirm('사진을 삭제할까요?')){p.photos=p.photos.filter(x=>x.id!==b.dataset.pdel);save();render();}});
   body.querySelectorAll('[data-lzoom]').forEach(img=>img.onclick=()=>{
     const ov=document.createElement('div');ov.className='overlay';ov.style.cursor='zoom-out';
@@ -1553,15 +1591,484 @@ function renderSiteSub(body,p){
   wire(body);
 }
 
+/* ── 작업자 출력 체크 — 등록된 작업자를 눌러 그날 출력 추가/해제 ── */
+/* 현장 출력 기록의 인적사항을 회사 작업자 명부에 자동 반영 */
+function upsertWorkerDB(w){
+  if(!w||!w.name)return;DB.workersDB=DB.workersDB||[];
+  let r=DB.workersDB.find(x=>x.name===w.name);
+  if(!r){r={id:uid(),name:w.name};DB.workersDB.push(r);}
+  ['trade','labor','ssn','phone','bank','account','address'].forEach(f=>{if(w[f])r[f]=w[f];});
+}
+function openWorkerCheck(date){
+  const p=proj();p.workers=p.workers||[];
+  const ov=document.createElement('div');ov.className='overlay';
+  /* 작업자 명부(회사 공용) + 이 현장 기록을 합쳐 이름별 최신 정보 구성 */
+  const uniq=()=>{const m={};
+    (DB.workersDB||[]).forEach(w=>{if(w.name)m[w.name]=Object.assign({},w);});
+    p.workers.slice().sort((a,b)=>(a.date||'').localeCompare(b.date||'')).forEach(w=>{if(w.name)m[w.name]=Object.assign(m[w.name]||{},w);});
+    return Object.values(m).sort((a,b)=>a.name.localeCompare(b.name));};
+  const build=()=>{
+    const us=uniq();
+    return us.length?us.map(u=>{
+      const on=p.workers.some(w=>w.date===date&&w.name===u.name);
+      return`<button class="btn ${on?'green':''}" data-wname="${esc(u.name)}" style="justify-content:flex-start">
+        ${on?'✓ ':''}${esc(u.name)}${u.trade?`&nbsp;<span style="font-size:11px;opacity:.75">${esc(u.trade)}</span>`:''}${+u.labor?`&nbsp;<span class="num" style="font-size:11px;opacity:.75">${numf(+u.labor)}원</span>`:''}</button>`;
+    }).join(''):'<div class="sub" style="padding:8px 0">아직 등록된 작업자가 없습니다. 아래 "새 작업자"로 시작하세요.</div>';
+  };
+  ov.innerHTML=`<div class="modal" style="width:min(520px,100%)"><h2>작업자 출력 체크 · <span class="num">${fdateF(date)}</span></h2>
+    <div class="msub">이름을 누르면 그날 출력으로 추가되고, 다시 누르면 빠집니다. 단가·주민번호·계좌는 마지막 기록을 그대로 가져옵니다.</div>
+    <div id="wcList" style="padding:6px 22px 4px;display:flex;flex-direction:column;gap:6px;max-height:46vh;overflow-y:auto">${build()}</div>
+    <div class="modal-foot"><button class="btn" id="wcNew">${svg(IC.plus)}새 작업자</button><div class="right"><button class="btn green" id="wcDone">완료</button></div></div></div>`;
+  document.body.appendChild(ov);
+  const close=()=>{ov.remove();render();};
+  ov.addEventListener('mousedown',e=>{if(e.target===ov)close();});
+  ov.querySelector('#wcDone').onclick=close;
+  ov.querySelector('#wcNew').onclick=()=>{ov.remove();openForm('workers',null,{date});};
+  const wireList=()=>ov.querySelectorAll('[data-wname]').forEach(b=>b.onclick=()=>{
+    const nm=b.dataset.wname;
+    const ex=p.workers.find(w=>w.date===date&&w.name===nm);
+    if(ex)p.workers=p.workers.filter(w=>w.id!==ex.id);
+    else{const u=uniq().find(x=>x.name===nm)||{};
+      const nw={id:uid(),date,name:nm,trade:u.trade||'',labor:u.labor||'',expense:'',ssn:u.ssn||'',phone:u.phone||'',bank:u.bank||'',account:u.account||'',address:u.address||'',memo:''};
+      p.workers.push(nw);upsertWorkerDB(nw);}
+    save();ov.querySelector('#wcList').innerHTML=build();wireList();
+  });
+  wireList();
+}
+
+/* ── 노무비 — 월별 일용노무비 지급명세서 (3.3% = 소득세 3% + 지방소득세 0.3%) ── */
+function laborCalc(labor){const l=+labor||0,tax=Math.round(l*0.03),ltax=Math.round(l*0.003);return{l,tax,ltax,ded:tax+ltax,net:l-tax-ltax};}
+function laborMonthData(p,ym){
+  const rows=(p.workers||[]).filter(w=>(w.date||'').slice(0,7)===ym);
+  const by={};
+  rows.forEach(w=>{const k=w.name||'—';const o=by[k]=by[k]||{name:k,days:[],dates:[],labor:0,exp:0};
+    o.days.push(+w.date.slice(8,10));o.dates.push(w.date);o.labor+=+w.labor||0;o.exp+=+w.expense||0;
+    ['ssn','phone','bank','account','address','trade'].forEach(f=>{if(w[f])o[f]=w[f];});});
+  const people=Object.values(by).sort((a,b)=>a.name.localeCompare(b.name));
+  people.forEach(o=>{o.days.sort((a,b)=>a-b);Object.assign(o,laborCalc(o.labor));o.avg=o.days.length?Math.round(o.labor/o.days.length):0;});
+  const tot={n:people.length,days:0,labor:0,tax:0,ltax:0,ded:0,net:0,exp:0};
+  people.forEach(o=>{tot.days+=o.days.length;tot.labor+=o.labor;tot.tax+=o.tax;tot.ltax+=o.ltax;tot.ded+=o.ded;tot.net+=o.net;tot.exp+=o.exp;});
+  return{rows,people,tot};
+}
+function vLabor(body,p){
+  p.workers=p.workers||[];
+  const months=[...new Set(p.workers.map(w=>(w.date||'').slice(0,7)))].filter(Boolean).sort();
+  const ym=state.laborMonth||months[months.length-1]||todayStr().slice(0,7);
+  state.laborMonth=ym;
+  const[Y,M]=ym.split('-').map(Number);
+  const{rows,people,tot}=laborMonthData(p,ym);
+  const trs=people.map(o=>`<tr>
+      <td class="strong">${esc(o.name)}${o.trade?`<br><span class="tag">${esc(o.trade)}</span>`:''}</td>
+      <td class="sub num">${esc(o.ssn||'—')}<br>${o.phone?`<a class="link" href="tel:${esc(o.phone)}">${esc(o.phone)}</a>`:'—'}</td>
+      <td class="sub">${esc(o.bank||'—')}<br><span class="num">${esc(o.account||'')}</span></td>
+      <td class="c"><button class="btn sm num" data-wdays="${esc(o.name)}" title="누르면 달력으로 출력일을 보여줍니다">${o.days.length}일</button></td>
+      <td class="r num">${numf(o.avg)}</td>
+      <td class="r num strong">${numf(o.labor)}</td>
+      <td class="r num sub">${numf(o.tax)}<br>${numf(o.ltax)}</td>
+      <td class="r num">${numf(o.ded)}</td>
+      <td class="r num strong" style="color:var(--good)">${numf(o.net)}</td>
+      <td class="r num">${o.exp?numf(o.exp):'—'}</td>
+      <td class="r num strong">${numf(o.net+o.exp)}</td></tr>`).join('');
+  const detail=rows.slice().sort((a,b)=>(b.date||'').localeCompare(a.date||'')||(a.name||'').localeCompare(b.name||'')).map(w=>{const c=laborCalc(w.labor);
+    return`<tr><td class="num">${fdate(w.date)}</td><td class="strong">${esc(w.name)}</td><td>${w.trade?`<span class="tag">${esc(w.trade)}</span>`:'—'}</td>
+    <td class="r num">${c.l?numf(c.l):'—'}</td><td class="r num sub">${c.l?numf(c.net):'—'}</td><td class="r num">${+w.expense?numf(+w.expense):'—'}</td><td class="sub">${esc(w.memo||'')}</td>
+    <td><div class="row-actions no-print"><button class="icon-btn" data-e-type="workers" data-e-id="${w.id}" title="수정">${svg(IC.edit)}</button><button class="icon-btn" data-d-type="workers" data-d-id="${w.id}" title="삭제">${svg(IC.trash)}</button></div></td></tr>`;}).join('');
+  body.innerHTML=`<div class="vhead"><div><div class="t">노무비 — 일용노무비 지급명세서</div><div class="d">일지에서 체크한 작업자가 월별로 자동 정리됩니다. 공제 3.3% = 소득세 3% + 지방소득세 0.3% (원단위 반올림)</div></div><div class="spacer"></div>
+    <button class="btn" id="lbAdd">${svg(IC.plus)}작업자 출력 추가</button>
+    <button class="btn green" id="lbXls">${svg(IC.print)}엑셀(.xlsx) 다운로드</button></div>
+  <div class="calbar">
+    <button class="btn sm" id="lbPrev">‹ 이전달</button>
+    <div class="mo num" style="min-width:auto">${Y}년 ${M}월</div>
+    <button class="btn sm" id="lbNext">다음달 ›</button>
+    <div style="flex:1"></div>
+    <span class="sub">기록 있는 달: ${months.length?months.map(m2=>`<button class="tag" data-lbym="${m2}" style="cursor:pointer;border:1px solid var(--line);background:${m2===ym?'var(--surface-2)':'transparent'};font-weight:${m2===ym?'700':'500'}">${m2.replace('-','.')}</button>`).join(' '):'없음'}</span>
+  </div>
+  <div class="kpis" style="grid-template-columns:repeat(5,1fr)">
+    <div class="kpi tint"><div class="k">출역인원</div><div class="v num">${tot.n}<small>명</small></div></div>
+    <div class="kpi"><div class="k">총 노무비</div><div class="v num">${numf(tot.labor)}<small>원</small></div></div>
+    <div class="kpi"><div class="k">공제 (3.3%)</div><div class="v num">${numf(tot.ded)}<small>원</small></div></div>
+    <div class="kpi"><div class="k">실지급액</div><div class="v num">${numf(tot.net)}<small>원</small></div></div>
+    <div class="kpi"><div class="k">경비</div><div class="v num">${numf(tot.exp)}<small>원</small></div></div>
+  </div>
+  <div class="card" style="margin-bottom:14px"><div class="card-h"><span class="ct">${Y}년 ${M}월 일용노무비 지급명세서</span><span class="cs">${esc(p.info.name)}</span></div>
+    <div class="tbl-wrap">${people.length?`<table><thead>
+      <tr><th>성명</th><th>주민등록번호<br>연락처</th><th>은행<br>계좌번호</th><th class="c">출력일수<br><span style="font-weight:500">(누르면 달력)</span></th><th class="r">노임단가<br><span style="font-weight:500">(평균)</span></th><th class="r">총 지급액</th><th class="r">소득세<br>지방소득세</th><th class="r">공제합계</th><th class="r">실 지급액</th><th class="r">경비</th><th class="r">합계<br><span style="font-weight:500">(실지급+경비)</span></th></tr></thead>
+      <tbody>${trs}
+      <tr style="font-weight:700;border-top:2px solid var(--line-strong)"><td>합계</td><td class="sub">${tot.n}명</td><td></td><td class="c num">${tot.days}</td><td class="r num sub">${tot.days?numf(Math.round(tot.labor/tot.days)):'—'}</td><td class="r num">${numf(tot.labor)}</td><td class="r num sub">${numf(tot.tax)}<br>${numf(tot.ltax)}</td><td class="r num">${numf(tot.ded)}</td><td class="r num" style="color:var(--good)">${numf(tot.net)}</td><td class="r num">${numf(tot.exp)}</td><td class="r num">${numf(tot.net+tot.exp)}</td></tr>
+      </tbody></table>`:emptyB('이 달에는 출력 기록이 없습니다. 현장일지 날짜칸의 "👷 작업자" 버튼이나 위 "작업자 출력 추가"로 기록하세요.')}</div></div>
+  <div class="card"><div class="card-h"><span class="ct">일자별 출력 기록</span><span class="cs">${rows.length}건 — 수정·삭제는 여기서</span></div>
+    <div class="tbl-wrap">${rows.length?`<table><thead><tr><th>날짜</th><th>이름</th><th>공정</th><th class="r">노무비</th><th class="r">공제 후</th><th class="r">경비</th><th>비고</th><th></th></tr></thead><tbody>${detail}</tbody></table>`:emptyB('기록이 없습니다.')}</div></div>`;
+  body.querySelector('#lbPrev').onclick=()=>{state.laborMonth=shiftMonth(ym,-1);render();};
+  body.querySelector('#lbNext').onclick=()=>{state.laborMonth=shiftMonth(ym,1);render();};
+  body.querySelectorAll('[data-lbym]').forEach(b=>b.onclick=()=>{state.laborMonth=b.dataset.lbym;render();});
+  body.querySelector('#lbAdd').onclick=()=>openForm('workers',null,{date:ym===todayStr().slice(0,7)?todayStr():ym+'-01'});
+  body.querySelector('#lbXls').onclick=()=>exportLaborXlsx(p,ym);
+  body.querySelectorAll('[data-wdays]').forEach(b=>b.onclick=()=>{
+    const o=people.find(x=>x.name===b.dataset.wdays);if(o)openWorkerDaysCal(o.name,o.dates);
+  });
+  wire(body);
+}
+
+/* ── 출력일 달력 보기 — 출력일수를 눌렀을 때 달력에 표시 ── */
+function openWorkerDaysCal(name,dates){
+  const byM={};dates.forEach(d=>{(byM[d.slice(0,7)]=byM[d.slice(0,7)]||new Set()).add(+d.slice(8,10));});
+  const months=Object.keys(byM).sort();
+  const calM=ym=>{
+    const[y,m]=ym.split('-').map(Number);
+    const first=new Date(y,m-1,1).getDay(),dim=new Date(y,m,0).getDate();
+    let cells='';for(let i=0;i<first;i++)cells+='<span></span>';
+    for(let d=1;d<=dim;d++){const on=byM[ym].has(d);
+      cells+=`<span class="num" style="display:grid;place-items:center;height:30px;border-radius:8px;${on?'background:var(--green);color:#fff;font-weight:700':'color:var(--muted)'}">${d}</span>`;}
+    return`<div><div style="font-weight:700;margin:2px 0 7px;text-align:center" class="num">${y}년 ${m}월 <span class="sub" style="font-weight:500">(${byM[ym].size}일 출력)</span></div>
+      <div style="display:grid;grid-template-columns:repeat(7,1fr);gap:3px;font-size:12px;text-align:center">
+      ${['일','월','화','수','목','금','토'].map((w,i)=>`<span style="font-weight:700;color:${i===0?'var(--bad)':i===6?'#3F5BB0':'var(--faint)'}">${w}</span>`).join('')}${cells}</div></div>`;
+  };
+  const ov=document.createElement('div');ov.className='overlay';
+  ov.innerHTML=`<div class="modal" style="width:min(${months.length>1?740:420}px,100%)"><h2>${esc(name)} 출력일 <span class="sub" style="font-size:12px;font-weight:500">총 ${dates.length}일</span></h2>
+    <div style="padding:8px 22px 12px;display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:20px;max-height:62vh;overflow-y:auto">${months.map(calM).join('')}</div>
+    <div class="modal-foot"><span></span><div class="right"><button class="btn green" id="wdClose">닫기</button></div></div></div>`;
+  document.body.appendChild(ov);
+  const close=()=>ov.remove();
+  ov.addEventListener('mousedown',e=>{if(e.target===ov)close();});
+  ov.querySelector('#wdClose').onclick=close;
+}
+
+/* ===== 노무비 (회사 전체 탭) — 현장 기록이 달→분기→년으로 모입니다 ===== */
+function vLaborCo(c){
+  DB.workersDB=DB.workersDB||[];
+  const unit=state.laborUnit||'m';
+  /* 모든 현장의 출력 기록 수집 (현장관리에서 입력한 데이터가 원본) */
+  const all=[];DB.projects.forEach(pr=>(pr.workers||[]).forEach(w=>{if(w.date)all.push(Object.assign({},w,{_pid:pr.id,_pname:pr.info.name||'현장'}));}));
+  const perOf=d=>unit==='m'?d.slice(0,7):unit==='q'?`${d.slice(0,4)}-Q${Math.ceil(+d.slice(5,7)/3)}`:d.slice(0,4);
+  const perLabel=pp=>unit==='m'?`${+pp.slice(0,4)}년 ${+pp.slice(5,7)}월`:unit==='q'?`${pp.slice(0,4)}년 ${pp.slice(6)}분기`:`${pp}년`;
+  const shiftPer=(pp,dir)=>{
+    if(unit==='m')return shiftMonth(pp,dir);
+    if(unit==='q'){let[y,q]=pp.split('-Q').map(Number);q+=dir;if(q<1){q=4;y--;}if(q>4){q=1;y++;}return`${y}-Q${q}`;}
+    return String(+pp+dir);
+  };
+  const pers=[...new Set(all.map(w=>perOf(w.date)))].sort();
+  /* 단위(월/분기/년)에 맞는 기간이 아니면 최근 기간으로 */
+  const fmt={m:/^\d{4}-\d{2}$/,q:/^\d{4}-Q\d$/,y:/^\d{4}$/}[unit];
+  let per=state.laborPer;
+  if(!per||!fmt.test(per))per=pers[pers.length-1]||perOf(todayStr());
+  state.laborPer=per;
+  const rows=all.filter(w=>perOf(w.date)===per);
+  /* 작업자별 집계 */
+  const by={};rows.forEach(w=>{const k=w.name||'—';const o=by[k]=by[k]||{name:k,dates:[],labor:0,exp:0,sites:{}};
+    o.dates.push(w.date);o.labor+=+w.labor||0;o.exp+=+w.expense||0;o.sites[w._pname]=1;
+    ['ssn','phone','bank','account','trade'].forEach(f=>{if(w[f])o[f]=w[f];});});
+  const people=Object.values(by).sort((a,b)=>a.name.localeCompare(b.name));
+  people.forEach(o=>Object.assign(o,laborCalc(o.labor)));
+  const tot={n:people.length,days:0,labor:0,tax:0,ltax:0,ded:0,net:0,exp:0};
+  people.forEach(o=>{tot.days+=o.dates.length;tot.labor+=o.labor;tot.tax+=o.tax;tot.ltax+=o.ltax;tot.ded+=o.ded;tot.net+=o.net;tot.exp+=o.exp;});
+  /* 현장별 집계 */
+  const byP={};rows.forEach(w=>{const o=byP[w._pid]=byP[w._pid]||{pid:w._pid,name:w._pname,names:{},days:0,labor:0,exp:0};
+    o.names[w.name||'—']=1;o.days++;o.labor+=+w.labor||0;o.exp+=+w.expense||0;});
+  const sites=Object.values(byP).sort((a,b)=>b.labor-a.labor);
+  /* 작업자 명부 */
+  const reg=DB.workersDB.slice().sort((a,b)=>(a.name||'').localeCompare(b.name||''));
+  const seg=(u,l)=>`<button data-lbu="${u}" class="${unit===u?'on':''}">${l}</button>`;
+  c.innerHTML=`
+  <div class="vhead"><div><div class="t">노무비</div><div class="d">현장관리에서 기록한 작업자 출력이 <b>달 → 분기 → 년</b>으로 모입니다. 현장별 기록·수정은 각 현장의 노무비 탭에서 하세요.</div></div><div class="spacer"></div>
+    ${addBtn('workerdb','작업자 등록')}
+    <button class="btn green" id="lcXls">${svg(IC.print)}엑셀 다운로드</button></div>
+  <div class="calbar">
+    <div class="seg" id="lbUnit">${seg('m','월')}${seg('q','분기')}${seg('y','년')}</div>
+    <button class="btn sm" id="lcPrev">‹</button>
+    <div class="mo num" style="min-width:auto">${perLabel(per)}</div>
+    <button class="btn sm" id="lcNext">›</button>
+    <div style="flex:1"></div>
+    <span class="sub">${pers.length?pers.slice(-8).map(p2=>`<button class="tag num" data-lcper="${p2}" style="cursor:pointer;border:1px solid var(--line);background:${p2===per?'var(--surface-2)':'transparent'};font-weight:${p2===per?'700':'500'}">${perLabel(p2)}</button>`).join(' '):''}</span>
+  </div>
+  <div class="kpis" style="grid-template-columns:repeat(5,1fr)">
+    <div class="kpi tint"><div class="k">출역인원</div><div class="v num">${tot.n}<small>명</small></div></div>
+    <div class="kpi"><div class="k">총 노무비</div><div class="v num">${numf(tot.labor)}<small>원</small></div></div>
+    <div class="kpi"><div class="k">공제 (3.3%)</div><div class="v num">${numf(tot.ded)}<small>원</small></div></div>
+    <div class="kpi"><div class="k">실지급액</div><div class="v num">${numf(tot.net)}<small>원</small></div></div>
+    <div class="kpi"><div class="k">경비</div><div class="v num">${numf(tot.exp)}<small>원</small></div></div>
+  </div>
+  <div class="card" style="margin-bottom:14px"><div class="card-h"><span class="ct">작업자별 집계 · ${perLabel(per)}</span><span class="cs">전 현장 합산 — 출력일수를 누르면 달력으로 보여줍니다</span></div>
+    <div class="tbl-wrap">${people.length?`<table><thead><tr><th>성명</th><th>주민등록번호<br>연락처</th><th>은행<br>계좌번호</th><th>현장</th><th class="c">출력일수</th><th class="r">총 지급액</th><th class="r">소득세<br>지방소득세</th><th class="r">공제합계</th><th class="r">실 지급액</th><th class="r">경비</th><th class="r">합계</th></tr></thead>
+      <tbody>${people.map(o=>`<tr>
+        <td class="strong">${esc(o.name)}${o.trade?`<br><span class="tag">${esc(o.trade)}</span>`:''}</td>
+        <td class="sub num">${esc(o.ssn||'—')}<br>${esc(o.phone||'—')}</td>
+        <td class="sub">${esc(o.bank||'—')}<br><span class="num">${esc(o.account||'')}</span></td>
+        <td class="sub" style="max-width:150px">${Object.keys(o.sites).map(s=>`<span class="tag">${esc(s)}</span>`).join(' ')}</td>
+        <td class="c"><button class="btn sm num" data-wdays="${esc(o.name)}">${o.dates.length}일</button></td>
+        <td class="r num strong">${numf(o.labor)}</td>
+        <td class="r num sub">${numf(o.tax)}<br>${numf(o.ltax)}</td>
+        <td class="r num">${numf(o.ded)}</td>
+        <td class="r num strong" style="color:var(--good)">${numf(o.net)}</td>
+        <td class="r num">${o.exp?numf(o.exp):'—'}</td>
+        <td class="r num strong">${numf(o.net+o.exp)}</td></tr>`).join('')}
+      <tr style="font-weight:700;border-top:2px solid var(--line-strong)"><td>합계</td><td class="sub">${tot.n}명</td><td></td><td></td><td class="c num">${tot.days}</td><td class="r num">${numf(tot.labor)}</td><td class="r num sub">${numf(tot.tax)}<br>${numf(tot.ltax)}</td><td class="r num">${numf(tot.ded)}</td><td class="r num" style="color:var(--good)">${numf(tot.net)}</td><td class="r num">${numf(tot.exp)}</td><td class="r num">${numf(tot.net+tot.exp)}</td></tr>
+      </tbody></table>`:emptyB('이 기간에는 출력 기록이 없습니다. 현장관리 → 현장일지 날짜칸의 "👷 작업자" 버튼으로 기록하세요.')}</div></div>
+  <div class="card" style="margin-bottom:14px"><div class="card-h"><span class="ct">현장별 집계 · ${perLabel(per)}</span><span class="cs">현장을 누르면 해당 현장 노무비로 이동</span></div>
+    <div class="tbl-wrap">${sites.length?`<table><thead><tr><th>현장</th><th class="c">인원</th><th class="c">출력일수</th><th class="r">노무비</th><th class="r">공제 후</th><th class="r">경비</th></tr></thead>
+      <tbody>${sites.map(s=>{const c2=laborCalc(s.labor);return`<tr style="cursor:pointer" data-gosite="${s.pid}"><td class="strong">${esc(s.name)}</td><td class="c num">${Object.keys(s.names).length}</td><td class="c num">${s.days}</td><td class="r num">${numf(s.labor)}</td><td class="r num">${numf(c2.net)}</td><td class="r num">${s.exp?numf(s.exp):'—'}</td></tr>`;}).join('')}</tbody></table>`:emptyB('기록이 없습니다.')}</div></div>
+  <div class="card"><div class="card-h"><span class="ct">작업자 명부</span><span class="cs">자주 함께 일하는 작업자 — 현장 출력 체크에서 자동으로 불러오고, 현장 기록 시 자동 갱신됩니다</span></div>
+    <div class="tbl-wrap">${reg.length?`<table><thead><tr><th>이름</th><th>공정</th><th class="r">기본 단가</th><th>주민등록번호</th><th>연락처</th><th>은행 · 계좌</th><th>주소</th><th>비고</th><th></th></tr></thead>
+      <tbody>${reg.map(w=>`<tr><td class="strong">${esc(w.name)}</td><td>${w.trade?`<span class="tag">${esc(w.trade)}</span>`:'—'}</td>
+        <td class="r num">${+w.labor?numf(+w.labor):'—'}</td><td class="sub num">${esc(w.ssn||'—')}</td>
+        <td class="num">${w.phone?`<a class="link" href="tel:${esc(w.phone)}">${esc(w.phone)}</a>`:'—'}</td>
+        <td class="sub">${esc([w.bank,w.account].filter(Boolean).join(' '))||'—'}</td>
+        <td class="sub">${esc(w.address||'—')}</td><td class="sub">${esc(w.memo||'—')}</td>
+        <td><div class="row-actions no-print"><button class="icon-btn" data-wdb-e="${w.id}" title="수정">${svg(IC.edit)}</button><button class="icon-btn" data-wdb-d="${w.id}" title="삭제">${svg(IC.trash)}</button></div></td></tr>`).join('')}</tbody></table>`
+      :emptyB('아직 명부가 없습니다. "작업자 등록"으로 추가하거나, 현장에서 출력 기록을 남기면 자동으로 채워집니다.',addBtn('workerdb','작업자 등록'))}</div></div>`;
+  c.querySelectorAll('#lbUnit [data-lbu]').forEach(b=>b.onclick=()=>{state.laborUnit=b.dataset.lbu;state.laborPer=null;render();});
+  c.querySelector('#lcPrev').onclick=()=>{state.laborPer=shiftPer(per,-1);render();};
+  c.querySelector('#lcNext').onclick=()=>{state.laborPer=shiftPer(per,1);render();};
+  c.querySelectorAll('[data-lcper]').forEach(b=>b.onclick=()=>{state.laborPer=b.dataset.lcper;render();});
+  c.querySelectorAll('[data-wdays]').forEach(b=>b.onclick=()=>{const o=people.find(x=>x.name===b.dataset.wdays);if(o)openWorkerDaysCal(o.name,o.dates);});
+  c.querySelectorAll('[data-gosite]').forEach(tr=>tr.onclick=()=>{DB.active=tr.dataset.gosite;state.tab='schedule';state.siteSub='labor';save();render();});
+  c.querySelectorAll('[data-wdb-e]').forEach(b=>b.onclick=()=>{const it=DB.workersDB.find(x=>x.id===b.dataset.wdbE);openForm('workerdb',it);});
+  c.querySelectorAll('[data-wdb-d]').forEach(b=>b.onclick=()=>{if(confirm('명부에서 삭제할까요? (현장 출력 기록은 남습니다)')){DB.workersDB=DB.workersDB.filter(x=>x.id!==b.dataset.wdbD);save();render();}});
+  c.querySelector('#lcXls').onclick=()=>exportLaborCoXlsx(unit,per,perLabel(per),rows,people,sites,tot);
+  wire(c);
+}
+
+/* ── 회사 노무비 엑셀 — 기간별 집계(작업자·현장·일자별) ── */
+async function exportLaborCoXlsx(unit,per,label,rows,people,sites,tot){
+  try{await loadSheetJS();}catch(e){alert('엑셀 모듈을 불러오지 못했습니다. 인터넷 연결을 확인해 주세요.');return;}
+  if(!rows.length){alert('이 기간에는 출력 기록이 없습니다.');return;}
+  const wb=XLSX.utils.book_new();
+  const s1=[[`${label} 노무비 집계 (전 현장)`],[],
+    ['성명','주민등록번호','연락처','은행','계좌번호','현장','출력일수','총 지급액','소득세(3%)','지방소득세(0.3%)','공제합계','실지급액','경비','합계'],
+    ...people.map(o=>[o.name,o.ssn||'',o.phone||'',o.bank||'',o.account||'',Object.keys(o.sites).join(', '),o.dates.length,o.labor,o.tax,o.ltax,o.ded,o.net,o.exp||'',o.net+o.exp]),
+    [],['합계','','','','','',tot.days,tot.labor,tot.tax,tot.ltax,tot.ded,tot.net,tot.exp,tot.net+tot.exp]];
+  const sh1=XLSX.utils.aoa_to_sheet(s1);
+  sh1['!merges']=[{s:{r:0,c:0},e:{r:0,c:13}}];
+  sh1['!cols']=[{wch:9},{wch:16},{wch:14},{wch:9},{wch:15},{wch:18},{wch:8},{wch:11},{wch:10},{wch:12},{wch:10},{wch:11},{wch:9},{wch:11}];
+  XLSX.utils.book_append_sheet(wb,sh1,'작업자별');
+  const s2=[[`${label} 현장별 노무비`],[],['현장','인원','출력일수','노무비','공제 후','경비'],
+    ...sites.map(s=>{const c2=laborCalc(s.labor);return[s.name,Object.keys(s.names).length,s.days,s.labor,c2.net,s.exp||''];})];
+  const sh2=XLSX.utils.aoa_to_sheet(s2);
+  sh2['!merges']=[{s:{r:0,c:0},e:{r:0,c:5}}];
+  sh2['!cols']=[{wch:22},{wch:6},{wch:8},{wch:12},{wch:12},{wch:10}];
+  XLSX.utils.book_append_sheet(wb,sh2,'현장별');
+  const s3=[['날짜','현장','이름','공정','노임단가','공제(3.3%)','실지급','경비','비고'],
+    ...rows.slice().sort((a,b)=>(a.date||'').localeCompare(b.date||'')).map(w=>{const c2=laborCalc(w.labor);
+      return[w.date,w._pname,w.name||'',w.trade||'',c2.l,c2.ded,c2.net,+w.expense||'',w.memo||''];})];
+  const sh3=XLSX.utils.aoa_to_sheet(s3);
+  sh3['!cols']=[{wch:11},{wch:18},{wch:9},{wch:9},{wch:10},{wch:10},{wch:11},{wch:9},{wch:16}];
+  XLSX.utils.book_append_sheet(wb,sh3,'일자별 상세');
+  XLSX.writeFile(wb,`노무비_${safeName(label)}.xlsx`);
+}
+
+/* ── 노무비 엑셀(.xlsx) — 일용노무비 지급명세서 양식으로 내보내기 ── */
+async function exportLaborXlsx(p,ym){
+  try{await loadSheetJS();}catch(e){alert('엑셀 모듈을 불러오지 못했습니다. 인터넷 연결을 확인해 주세요.');return;}
+  const[Y,M]=ym.split('-').map(Number);
+  const dim=new Date(Y,M,0).getDate();
+  const{rows,people,tot}=laborMonthData(p,ym);
+  if(!people.length){alert('이 달에는 출력 기록이 없습니다.');return;}
+  const co=CO();
+  const NCOL=29; /* 0성명 1주민/연락처 2은행/주소 3계좌 4~19일자그리드 20일수/공수 21단가 22총지급 23소득/지방 24국민/고용 25건강/장기 26기타/공제계 27실지급 28경비 */
+  const blank=()=>Array(NCOL).fill('');
+  const aoa=[],merges=[];
+  const M2=(r1,c1,r2,c2)=>merges.push({s:{r:r1,c:c1},e:{r:r2,c:c2}});
+  /* 제목·현장 정보 */
+  let r=blank();r[0]=`${Y}년 ${M}월 일용노무비 지급명세서`;aoa.push(r);M2(0,0,0,NCOL-1);
+  r=blank();r[0]='현장명';r[1]=p.info.name||'';r[4]=`${Y}. ${M}. 1 ~ ${Y}. ${M}. ${dim} (${dim}일간)`;r[21]='관리자';r[22]=p.info.manager||'';r[24]='작성자';r[25]=co.ceo||'';aoa.push(r);
+  M2(1,1,1,3);M2(1,4,1,19);M2(1,22,1,23);M2(1,25,1,26);
+  /* 표 머리 2줄 */
+  r=blank();r[0]='성명';r[1]='주민(외국인)등록번호';r[2]='은행명';r[3]='계좌번호';
+  for(let d2=1;d2<=15;d2++)r[3+d2]=d2;
+  r[20]='출력일수';r[21]='노임단가';r[22]='총 지급액';r[23]='소득세';r[24]='국민연금';r[25]='건강보험';r[26]='기타공제';r[27]='실 지급액';r[28]='경비';aoa.push(r);
+  r=blank();r[1]='연락처';r[2]='주소';
+  for(let d2=16;d2<=31;d2++)r[d2-12]=d2<=dim?d2:'';
+  r[20]='출력공수';r[23]='지방소득세';r[24]='고용보험';r[25]='장기요양';r[26]='공제합계';aoa.push(r);
+  M2(2,0,3,0);M2(3,2,3,3);M2(2,21,3,21);M2(2,22,3,22);M2(2,27,3,27);M2(2,28,3,28);
+  /* 합계 2줄 */
+  r=blank();r[0]='합계';r[1]=`(${Y}년 ${M}월)`;r[2]=`출역인원 : ${tot.n}명`;r[20]=tot.days;r[21]='평균단가';r[22]=tot.labor;r[23]=tot.tax;r[27]=tot.net;r[28]=tot.exp;aoa.push(r);
+  r=blank();r[20]=tot.days;r[21]=tot.days?Math.round(tot.labor/tot.days):'';r[23]=tot.ltax;r[26]=tot.ded;aoa.push(r);
+  M2(4,0,5,0);M2(4,1,5,1);M2(4,2,5,3);M2(4,27,5,27);M2(4,28,5,28);
+  /* 작업자 2줄씩 */
+  let ri=6;
+  people.forEach(o=>{
+    const a=blank(),b=blank();
+    a[0]=o.name;a[1]=o.ssn||'';a[2]=o.bank||'';a[3]=o.account||'';
+    b[1]=o.phone||'';b[2]=o.address||'';
+    o.days.forEach(d2=>{if(d2<=15)a[3+d2]='●';else b[d2-12]='●';});
+    a[20]=o.days.length;b[20]=o.days.length;
+    a[21]=o.avg;a[22]=o.labor;a[23]=o.tax;b[23]=o.ltax;b[26]=o.ded;a[27]=o.net;a[28]=o.exp||'';
+    aoa.push(a,b);
+    M2(ri,0,ri+1,0);M2(ri+1,2,ri+1,3);M2(ri,21,ri+1,21);M2(ri,22,ri+1,22);M2(ri,27,ri+1,27);M2(ri,28,ri+1,28);
+    ri+=2;
+  });
+  const sh=XLSX.utils.aoa_to_sheet(aoa);
+  sh['!merges']=merges;
+  sh['!cols']=[{wch:9},{wch:17},{wch:11},{wch:15},...Array(16).fill({wch:3.2}),{wch:8},{wch:10},{wch:11},{wch:9},{wch:9},{wch:9},{wch:9},{wch:11},{wch:9}];
+  const wb=XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb,sh,`${M}월 지급명세서`);
+  /* 시트2 — 일자별 상세 */
+  const det=[['날짜','이름','공정','노임단가','소득세(3%)','지방소득세(0.3%)','공제합계','실지급액','경비','비고'],
+    ...rows.slice().sort((a,b)=>(a.date||'').localeCompare(b.date||'')).map(w=>{const c=laborCalc(w.labor);
+      return[w.date||'',w.name||'',w.trade||'',c.l,c.tax,c.ltax,c.ded,c.net,+w.expense||'',w.memo||''];})];
+  const sh2=XLSX.utils.aoa_to_sheet(det);
+  sh2['!cols']=[{wch:11},{wch:9},{wch:9},{wch:10},{wch:10},{wch:12},{wch:10},{wch:11},{wch:9},{wch:18}];
+  XLSX.utils.book_append_sheet(wb,sh2,'일자별 상세');
+  XLSX.writeFile(wb,`일용노무비_지급명세서_${(p.info.name||'현장').replace(/[\\/:*?"<>|]/g,'')}_${Y}-${String(M).padStart(2,'0')}.xlsx`);
+}
+
+/* ── 파일명에 못 쓰는 문자 제거 ── */
+const safeName=s=>String(s||'').replace(/[\\/:*?"<>|]/g,'').trim();
+
+/* ── 엑셀(.xls) 저장 — 앱 문서와 똑같은 모양의 표를 엑셀이 그대로 열도록 HTML로 내보냄 ── */
+function downloadExcelHtml(filename,bodyHtml){
+  const html=`<html xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:x="urn:schemas-microsoft-com:office:excel"><head><meta charset="utf-8"><!--[if gte mso 9]><xml><x:ExcelWorkbook><x:ExcelWorksheets><x:ExcelWorksheet><x:Name>문서</x:Name><x:WorksheetOptions><x:Print><x:ValidPrinterInfo/></x:Print></x:WorksheetOptions></x:ExcelWorksheet></x:ExcelWorksheets></x:ExcelWorkbook></xml><![endif]--></head><body>${bodyHtml}</body></html>`;
+  const blob=new Blob([String.fromCharCode(0xFEFF)+html],{type:'application/vnd.ms-excel'});
+  const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download=filename;
+  document.body.appendChild(a);a.click();a.remove();
+  setTimeout(()=>URL.revokeObjectURL(a.href),4000);
+}
+/* 엑셀 셀 스타일 (앱 견적서·발주서 디자인 그대로) */
+const XB='border:.5pt solid #b7bfb6;';
+const XNUM="mso-number-format:'#,##0';text-align:right;";
+const xth=`style="${XB}background:#3E5A43;color:#ffffff;font-weight:bold;padding:4px 7px;text-align:center"`;
+const xlb=`style="${XB}background:#EFF3EE;font-weight:bold;padding:4px 7px;color:#2b402f"`;
+const xtd=`style="${XB}padding:4px 7px"`;
+const xtc=`style="${XB}padding:4px 7px;text-align:center"`;
+const xtn=`style="${XB}padding:4px 7px;${XNUM}"`;
+
+/* ── 견적서 엑셀 — 앱 견적서(갑지+내역서)와 동일한 레이아웃 ── */
+function exportEstXlsx(est){
+  const p=proj(),cal=estCalc(est),co=CO(),isCon=est.type==='construction';
+  const W=isCon?10:7;
+  const band=t=>`<tr><td colspan="${W}" style="background:#3E5A43;color:#ffffff;font-weight:bold;letter-spacing:6px;padding:5px 9px">${t}</td></tr>`;
+  const srow=(label,amt,bold,green)=>`<tr><td colspan="${W-2}" style="${XB}padding:4px 9px;${bold?'font-weight:bold;':''}${green?'background:#EFF3EE;':''}">${label}</td><td style="${XB}text-align:center;${green?'background:#EFF3EE;':''}">₩</td><td style="${XB}padding:4px 7px;${XNUM}${bold?'font-weight:bold;':''}${green?'background:#EFF3EE;':''}">${amt}</td></tr>`;
+  /* 상단 정보 — 앱과 같은 좌(Client) / 우(Supplier) 구성 */
+  const py=+String(est.sizePy||'').replace(/[^0-9.]/g,'')||0;
+  const L=[['Client',esc(est.client||p.info.client||'')],['Project Name',esc(p.info.name||'')],['Size',py?py+'PY / '+Math.round(py*3.3058)+'㎡':''],['Quotion date',ymdKor(est.date)]];
+  const R=[['Supplier',esc(co.name||'')],['Office',esc(co.addr||'')],['Quotion Writer',esc(co.ceo||'')+' 대표'],['TEL',esc(co.tel||'')],['E-mail',esc(co.email||'')],['Business',esc(co.biz||'')+' · '+esc(co.bizType||'')]];
+  const lw=Math.ceil((W-2)/2),rw=W-2-lw;
+  let info='';
+  for(let i=0;i<R.length;i++){
+    const l=L[i]||['',''];
+    info+=`<tr><td ${xlb}>${l[0]}</td><td ${xtd} colspan="${lw}">${l[1]}</td><td ${xlb}>${R[i][0]}</td><td ${xtd} colspan="${rw}">${R[i][1]}</td></tr>`;
+  }
+  let h=`<table style="border-collapse:collapse;font-family:'Malgun Gothic';font-size:10pt">`;
+  h+=`<tr><td colspan="${W}" style="font-size:19pt;font-weight:bold;letter-spacing:9px;padding:6px 0;color:#171C26">견 적 서 <span style="font-size:9pt;color:#4A7C50;letter-spacing:2px">ESTIMATE</span></td></tr>`;
+  h+=info;
+  h+=`<tr><td colspan="${W}" style="padding:3px"></td></tr>`;
+  h+=band('직 접 공 사');
+  cal.secs.forEach((s,i)=>{h+=srow(`Section ${String(i+1).padStart(2,'0')}: &nbsp;${esc(s.name||'-')}`,s.total);});
+  h+=srow('직접공사비 계',cal.direct,1,1);
+  if(isCon){
+    h+=band('간 접 공 사');
+    cal.ind.forEach(x=>{h+=srow(esc(x[0]),x[1]);});
+    h+=srow('간접공사비 계',cal.indirect,1,1);
+  }
+  h+=srow('Sub TOTAL',cal.sub,1);
+  h+=srow('Discount',cal.discount?-cal.discount:'',!!cal.discount);
+  h+=srow('Tax: VAT 10%',est.vat==='포함'?Math.round(cal.grand*0.1):'');
+  h+=`<tr><td colspan="${W-2}" style="background:#4A7C50;color:#ffffff;font-weight:bold;letter-spacing:3px;padding:6px 9px">GRAND TOTAL</td><td style="background:#4A7C50;color:#ffffff;text-align:center">₩</td><td style="background:#4A7C50;color:#ffffff;font-weight:bold;padding:6px 7px;${XNUM}">${cal.grand}</td></tr>`;
+  h+=`<tr><td colspan="${W}" style="padding:3px 0;color:#555;font-size:9pt">비고/REMARK &nbsp; ${esc(est.remarks||'').replace(/\n/g,'<br>')}</td></tr>`;
+  h+=`<tr><td colspan="${W}" style="color:#555;font-size:9pt">성명: ${esc(co.ceo||'')} (인) &nbsp;·&nbsp; ※ 본 견적서는 발행일로 ${est.validDays||30}일 유효합니다. &nbsp;·&nbsp; Company Registration No. ${esc(co.reg||'')}</td></tr>`;
+  /* 내역서 — 앱 상세표와 같은 2줄 헤더 */
+  h+=`<tr><td colspan="${W}" style="padding:10px 0 2px;font-size:13pt;font-weight:bold;color:#171C26">내 역 서</td></tr>`;
+  if(isCon){
+    h+=`<tr><td ${xth} rowspan="2">Description</td><td ${xth} rowspan="2">Size</td><td ${xth} rowspan="2">Unit</td><td ${xth} rowspan="2">Qty</td><td ${xth} colspan="2">Material (자재)</td><td ${xth} colspan="2">Labor (노무)</td><td ${xth} rowspan="2">합 계</td><td ${xth} rowspan="2">TOTAL</td></tr>`;
+    h+=`<tr><td ${xth}>단가</td><td ${xth}>금액</td><td ${xth}>단가</td><td ${xth}>금액</td></tr>`;
+    est.sections.forEach((sec,si)=>{
+      h+=`<tr><td colspan="${W}" style="${XB}background:#EFF3EE;font-weight:bold;padding:4px 8px">Section ${String(si+1).padStart(2,'0')}: ${esc(sec.name||'-')}</td></tr>`;
+      (sec.items||[]).forEach(it=>{
+        const q=+it.qty||0,mp=+it.mp||0,lp=+it.lp||0;
+        if(!it.name&&!q)return;
+        h+=`<tr><td ${xtd}>${esc(it.name)}</td><td ${xtd}>${esc(it.spec)}</td><td ${xtc}>${esc(it.unit)}</td><td ${xtn}>${q||''}</td><td ${xtn}>${mp||''}</td><td ${xtn}>${mp*q||''}</td><td ${xtn}>${lp||''}</td><td ${xtn}>${lp*q||''}</td><td ${xtn}>${(mp+lp)||''}</td><td ${xtn}>${(mp+lp)*q||''}</td></tr>`;
+      });
+      h+=`<tr><td colspan="${W-1}" style="${XB}font-weight:bold;padding:4px 8px;text-align:right">Section ${si+1} TOTAL</td><td style="${XB}font-weight:bold;${XNUM}">${cal.secs[si].total}</td></tr>`;
+    });
+  }else{
+    h+=`<tr><td ${xth}>NO</td><td ${xth}>품명</td><td ${xth}>규격</td><td ${xth}>단위</td><td ${xth}>수량</td><td ${xth}>단가</td><td ${xth}>금액</td></tr>`;
+    const items=(est.sections[0]?est.sections[0].items:[]).filter(it=>it.name||+it.qty);
+    items.forEach((it,idx)=>{const q=+it.qty||0,a=(+it.mp||0)*q;
+      h+=`<tr><td ${xtc}>${idx+1}</td><td ${xtd}>${esc(it.name)}</td><td ${xtd}>${esc(it.spec)}</td><td ${xtc}>${esc(it.unit)}</td><td ${xtn}>${q||''}</td><td ${xtn}>${+it.mp||''}</td><td ${xtn}>${a||''}</td></tr>`;});
+    h+=`<tr><td colspan="6" style="${XB}font-weight:bold;padding:4px 8px;text-align:right">합계${cal.discount?' (할인 −₩'+numf(cal.discount)+' 반영)':''}</td><td style="${XB}font-weight:bold;${XNUM}">${cal.grand}</td></tr>`;
+  }
+  h+=`</table>`;
+  downloadExcelHtml(`견적서_${safeName(p.info.name||est.client||'현장')}_${est.date||todayStr()}.xls`,h);
+}
+
+/* ── 발주서 엑셀 — 앱 발주서와 동일한 레이아웃 ── */
+function exportOrderXlsx(po){
+  const p=proj(),items=p.orders.filter(o=>o.po===po);
+  if(!items.length)return;
+  const co=CO(),sp=!!items[0].showPrice;
+  const qtySum=items.reduce((s,o)=>s+(+o.qty||0),0);
+  const total=items.reduce((s,o)=>s+(+o.qty||0)*(+o.price||0),0);
+  const W=sp?7:6;
+  let h=`<table style="border-collapse:collapse;font-family:'Malgun Gothic';font-size:10pt">`;
+  h+=`<tr><td colspan="${W}" style="font-size:19pt;font-weight:bold;letter-spacing:9px;padding:6px 0;color:#171C26">발 주 서 <span style="font-size:9pt;color:#4A7C50;letter-spacing:2px">PURCHASE ORDER</span></td></tr>`;
+  const half=Math.floor(W/2);
+  h+=`<tr><td ${xlb}>발주번호</td><td ${xtd} colspan="${half-1}">${esc(po)}</td><td ${xlb}>발주일</td><td ${xtd} colspan="${W-half-1}">${items[0].orderDate||'—'}</td></tr>`;
+  h+=`<tr><td ${xlb}>현&nbsp;&nbsp;장</td><td ${xtd} colspan="${half-1}">${esc(p.info.name||'')}</td><td ${xlb}>납기일</td><td ${xtd} colspan="${W-half-1}">${items[0].dueDate||'—'}</td></tr>`;
+  h+=`<tr><td ${xlb}>공급처</td><td ${xtd} colspan="${half-1}">${esc(items[0].supplier||'')}</td><td ${xlb}>담&nbsp;&nbsp;당</td><td ${xtd} colspan="${W-half-1}">${esc(p.info.manager||co.ceo||'')} / ${esc(co.tel||'')}</td></tr>`;
+  h+=`<tr><td colspan="${W}" style="padding:3px"></td></tr>`;
+  h+=`<tr><td ${xth}>No</td><td ${xth}>품목</td><td ${xth}>규격</td><td ${xth}>수량</td><td ${xth}>단위</td>${sp?`<td ${xth}>단가</td><td ${xth}>금액</td>`:`<td ${xth}>비고</td>`}</tr>`;
+  items.forEach((o,idx)=>{
+    h+=`<tr><td ${xtc}>${idx+1}</td><td ${xtd}>${esc(o.item)}</td><td ${xtd}>${esc(o.spec||'')}</td><td ${xtn}>${+o.qty||''}</td><td ${xtc}>${esc(o.unit||'')}</td>${sp?`<td ${xtn}>${+o.price||''}</td><td ${xtn}>${(+o.qty||0)*(+o.price||0)||''}</td>`:`<td ${xtd}></td>`}</tr>`;
+  });
+  h+=`<tr><td style="${XB}background:#EFF3EE"></td><td colspan="2" style="${XB}background:#EFF3EE;font-weight:bold;padding:4px 7px">총 ${items.length}개 품목</td><td style="${XB}background:#EFF3EE;font-weight:bold;${XNUM}">${qtySum}</td><td style="${XB}background:#EFF3EE;text-align:center">-</td>${sp?`<td style="${XB}background:#EFF3EE"></td><td style="${XB}background:#EFF3EE;font-weight:bold;${XNUM}">${total}</td>`:`<td style="${XB}background:#EFF3EE"></td>`}</tr>`;
+  h+=`<tr><td colspan="${W}" style="padding:6px 0;color:#555;font-size:9pt">※ 상기와 같이 발주합니다.${sp?'':' &nbsp;※ 단가·금액은 별도 견적서에 따릅니다.'}</td></tr>`;
+  h+=`<tr><td colspan="${W}" style="padding:12px 0 0;text-align:right;color:#333">발주처 : <b style="color:#2b402f">${esc(co.name||'')}</b> &nbsp;&nbsp; (인)</td></tr>`;
+  h+=`</table>`;
+  downloadExcelHtml(`발주서_${safeName(po)}_${safeName(p.info.name||'현장')}.xls`,h);
+}
+
+/* ── 워드(.doc) 저장 — Word가 바로 여는 HTML 문서 ── */
+function downloadWordDoc(filename,bodyHtml){
+  const html=`<html xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:w="urn:schemas-microsoft-com:office:word" xmlns="http://www.w3.org/TR/REC-html40"><head><meta charset="utf-8"><!--[if gte mso 9]><xml><w:WordDocument><w:View>Print</w:View></w:WordDocument></xml><![endif]--><style>@page{size:A4;margin:14mm 13mm}body{font-family:'Malgun Gothic','맑은 고딕',sans-serif;font-size:11pt;color:#222;line-height:1.6}table{border-collapse:collapse}</style></head><body>${bodyHtml}</body></html>`;
+  const blob=new Blob(['﻿'+html],{type:'application/msword'});
+  const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download=filename;
+  document.body.appendChild(a);a.click();a.remove();
+  setTimeout(()=>URL.revokeObjectURL(a.href),4000);
+}
+
+/* ── 안내문 워드용 HTML — Word가 지원하는 표 기반 레이아웃 ── */
+function noticeWordHtml(d){
+  const co=CO();
+  const k=Math.max(.5,Math.min(2,(+d.fontScale||100)/100));
+  const pt=n=>Math.round(n*k*10)/10+'pt';
+  const logoAlign=d.logoPos==='center'?'center':d.logoPos==='right'?'right':'left';
+  const row=(kk,v)=>`<tr><td style="width:110px;padding:8pt 3pt;border-bottom:1px solid #ddd;color:#4A7C50;font-weight:bold;font-size:${pt(10)}">${kk}</td><td style="padding:8pt 3pt;border-bottom:1px solid #ddd;font-size:${pt(12)};font-weight:bold">${v}</td></tr>`;
+  const period=d.start&&d.end?`${fdateF(d.start)} ~ ${fdateF(d.end)} (약 ${weeks(d.start,d.end)}주)`:fdateF(d.start);
+  return`${d.logo?`<p style="text-align:${logoAlign};margin:0 0 14pt"><img src="${d.logo}" width="${Math.max(24,Math.min(600,+d.logoW||140))}"></p>`:''}
+  <h1 style="font-size:${pt(24)};margin:0 0 3pt;color:#171C26">인테리어 공사 안내문</h1>
+  <div style="border-bottom:3pt solid #4A7C50;width:56pt;margin:0 0 14pt"></div>
+  <p style="font-size:${pt(11)};line-height:1.85">${esc(d.greet).replace(/\n/g,'<br>')}</p>
+  <table style="width:100%;border-top:2pt solid #222;margin:8pt 0">${row('공사 세대',esc(d.unit)||'—')}${row('공사 기간',period)}${row('작업 시간',esc(d.hours))}${row('공사 내용',esc(d.works))}</table>
+  ${d.noisy?`<table style="width:100%;background:#F1F6F1;margin:8pt 0"><tr><td style="padding:9pt 12pt;font-size:${pt(10.5)};line-height:1.7"><b style="color:#4A7C50">소음 안내</b>&nbsp; ${esc(d.noisy)}</td></tr></table>`:''}
+  <p style="font-size:${pt(11)};line-height:1.85">${esc(d.close).replace(/\n/g,'<br>')}</p>
+  <br>
+  <table style="width:300pt;border:1px solid #ccd5cb">
+    <tr><td style="background:#3E5A43;color:#fff;padding:8pt 12pt;font-weight:bold;font-size:${pt(12)}">${esc(d.manager||co.ceo||'')} <span style="font-size:${pt(8)};font-weight:normal">— 현장 책임</span></td></tr>
+    <tr><td style="padding:8pt 12pt;font-size:${pt(9.5)};line-height:1.7"><b>${esc((co.name||'').split('(')[0].trim())}</b><br>${d.contact?`전화 ${esc(d.contact)}<br>`:''}${co.email?`이메일 ${esc(co.email)}<br>`:''}${co.addr?`주소 ${esc(co.addr)}`:''}</td></tr>
+  </table>`;
+}
+
 /* ── 아파트 공사 안내문 — 엘리베이터·1층 현관 게시용 A4 ── */
 function noticeData(p){
   const i=p.info;
   const phases=[...new Set(p.schedule.map(s=>s.phase).filter(Boolean))];
-  /* 고소음 공정(철거·목공·타일)은 일정에서 날짜를 읽어와 소음 안내에 자동 반영 */
+  /* 고소음 공정(철거·목공·타일)은 일정에서 날짜를 읽어와 소음 안내에 자동 반영
+     — 같은 공정은 하나로 묶고, 이어지는 기간은 병합, 날짜는 07.21 형식으로 통일 */
   const NOISY_PHASES=['철거','목공','타일'];
-  const loud=p.schedule.filter(s=>s.start&&NOISY_PHASES.some(k=>(s.phase||'').includes(k))).slice().sort((a,b)=>a.start.localeCompare(b.start));
-  const rng=s=>`${s.phase} ${fdate(s.start)}${s.end&&s.end!==s.start?`~${fdate(s.end)}`:''}`;
-  const autoNoisy=loud.length?`소음이 큰 작업은 ${loud.map(rng).join(', ')} 일정으로 진행됩니다. 해당 기간에는 소음이 다소 클 수 있으며, 최대한 신속히 마무리하겠습니다.`:'';
+  const DAY=86400000;
+  const tms=s=>{if(!s)return null;const m=String(s).trim().replace(/\./g,'-').match(/^(\d{4})-(\d{1,2})-(\d{1,2})$/);if(!m)return null;const t=new Date(+m[1],+m[2]-1,+m[3]).getTime();return isNaN(t)?null:t;};
+  const fmd=t=>{const dt=new Date(t);return`${String(dt.getMonth()+1).padStart(2,'0')}.${String(dt.getDate()).padStart(2,'0')}`;};
+  const noisyGroups=NOISY_PHASES.map(k=>{
+    const ivs=p.schedule.filter(s=>(s.phase||'').includes(k)).map(s=>{
+      const a=tms(s.start),b=tms(s.end);
+      return a==null?null:{a,b:(b!=null&&b>a)?b:a};
+    }).filter(Boolean).sort((x,y)=>x.a-y.a);
+    const merged=[];
+    ivs.forEach(iv=>{const L=merged[merged.length-1];
+      if(L&&iv.a-L.b<=DAY){if(iv.b>L.b)L.b=iv.b;}else merged.push({...iv});});
+    return{k,merged};
+  }).filter(g=>g.merged.length).sort((x,y)=>x.merged[0].a-y.merged[0].a);
+  const noisyTxt=noisyGroups.map(g=>`${g.k} ${g.merged.map(iv=>iv.a===iv.b?fmd(iv.a):`${fmd(iv.a)}~${fmd(iv.b)}`).join('·')}`).join(', ');
+  const autoNoisy=noisyGroups.length?`소음이 큰 작업은 ${noisyTxt} 일정으로 진행됩니다. 해당 기간에는 소음이 다소 클 수 있으며, 최대한 신속히 마무리하겠습니다.`:'';
   const d=Object.assign({
     unit:i.address||'',
     start:i.start||todayStr(), end:i.end||'',
@@ -1571,39 +2078,45 @@ function noticeData(p){
     noisy:'철거·타공 등 소음이 큰 작업은 공사 초반 2~3일에 집중되며, 최대한 신속히 마무리하겠습니다.',
     close:'공용 부위(엘리베이터·복도)는 보양재로 보호하고 작업 후 매일 청소하겠습니다.\n정해진 기간 내 공사를 마칠 수 있도록 최선을 다하겠으며, 불편사항은 아래 연락처로 연락 주시면 즉시 조치하겠습니다.',
     manager:i.manager||CO().ceo||'',
-    contact:(CO().tel||'').split('/')[0].trim()||i.contact||''
+    contact:(CO().tel||'').split('/')[0].trim()||i.contact||'',
+    logo:CO().logo||'', logoW:140, logoPos:'left', fontScale:100
   },p.notice||{});
   if(autoNoisy)d.noisy=autoNoisy; /* 일정이 바뀌면 소음 안내도 항상 최신 날짜로 */
   return d;
 }
 function noticeSheet(d){
   const co=CO();
-  const period=d.start&&d.end?`${fdateF(d.start)} ~ ${fdateF(d.end)} <span style="font-weight:600;color:#8A93A2;font-size:13px">(약 ${weeks(d.start,d.end)}주)</span>`:esc(fdateF(d.start));
-  const row=(k,v)=>`<div style="display:flex;gap:20px;padding:14px 2px;border-bottom:1px solid #EDF0F4;align-items:baseline">
-    <div style="width:96px;flex:none;font-weight:700;color:#4A7C50;font-size:13px;letter-spacing:.14em">${k}</div>
-    <div style="font-size:16px;font-weight:600;color:#1F2430;line-height:1.5">${v}</div></div>`;
-  const crow=(k,v)=>v?`<div style="display:flex;gap:14px;padding:5px 0;font-size:12.5px;line-height:1.5"><div style="width:44px;flex:none;color:#8A93A2">${k}</div><div style="color:#1F2430;font-weight:600">${v}</div></div>`:'';
+  /* fontScale % — 안내문 전체 글씨 크기 배율 */
+  const k=Math.max(.5,Math.min(2,(+d.fontScale||100)/100));
+  const fz=n=>Math.round(n*k*10)/10+'px';
+  const period=d.start&&d.end?`${fdateF(d.start)} ~ ${fdateF(d.end)} <span style="font-weight:600;color:#8A93A2;font-size:${fz(13)}">(약 ${weeks(d.start,d.end)}주)</span>`:esc(fdateF(d.start));
+  const row=(kk,v)=>`<div style="display:flex;gap:20px;padding:14px 2px;border-bottom:1px solid #EDF0F4;align-items:baseline">
+    <div style="width:96px;flex:none;font-weight:700;color:#4A7C50;font-size:${fz(13)};letter-spacing:.14em">${kk}</div>
+    <div style="font-size:${fz(16)};font-weight:600;color:#1F2430;line-height:1.5">${v}</div></div>`;
+  const crow=(kk,v)=>v?`<div style="display:flex;gap:14px;padding:5px 0;font-size:${fz(12.5)};line-height:1.5"><div style="width:44px;flex:none;color:#8A93A2">${kk}</div><div style="color:#1F2430;font-weight:600">${v}</div></div>`:'';
+  const logoW=Math.max(24,Math.min(600,+d.logoW||140));
+  const logoAlign=d.logoPos==='center'?'center':d.logoPos==='right'?'right':'left';
   return `<div style="min-height:255mm;display:flex;flex-direction:column;padding:10mm 6mm 6mm;letter-spacing:-.01em">
-    <div style="font-size:11px;font-weight:700;color:#4A7C50;letter-spacing:.24em;margin-bottom:30px">${esc(co.name)}</div>
-    <div style="font-size:36px;font-weight:800;letter-spacing:-.02em;line-height:1.25;color:#171C26">인테리어 공사 안내문</div>
+    ${d.logo?`<div style="text-align:${logoAlign};margin-bottom:30px"><img src="${d.logo}" style="width:${logoW}px;max-width:100%" alt="logo"></div>`:''}
+    <div style="font-size:${fz(36)};font-weight:800;letter-spacing:-.02em;line-height:1.25;color:#171C26">인테리어 공사 안내문</div>
     <div style="width:48px;height:4px;background:#4A7C50;border-radius:2px;margin:18px 0 26px;-webkit-print-color-adjust:exact;print-color-adjust:exact"></div>
-    <div style="font-size:15px;line-height:1.9;color:#3A4150;white-space:pre-wrap">${esc(d.greet)}</div>
+    <div style="font-size:${fz(15)};line-height:1.9;color:#3A4150;white-space:pre-wrap">${esc(d.greet)}</div>
     <div style="margin:26px 0 0;border-top:2px solid #171C26">
       ${row('공사 세대',esc(d.unit)||'—')}
       ${row('공사 기간',period)}
       ${row('작업 시간',esc(d.hours))}
       ${row('공사 내용',esc(d.works))}
     </div>
-    ${d.noisy?`<div style="margin-top:22px;background:#F1F6F1;border-radius:14px;padding:16px 20px;font-size:14px;line-height:1.8;color:#31423A;-webkit-print-color-adjust:exact;print-color-adjust:exact"><b style="color:#4A7C50">소음 안내</b> &nbsp;${esc(d.noisy)}</div>`:''}
-    <div style="font-size:15px;line-height:1.9;color:#3A4150;margin-top:22px;white-space:pre-wrap">${esc(d.close)}</div>
+    ${d.noisy?`<div style="margin-top:22px;background:#F1F6F1;border-radius:14px;padding:16px 20px;font-size:${fz(14)};line-height:1.8;color:#31423A;-webkit-print-color-adjust:exact;print-color-adjust:exact"><b style="color:#4A7C50">소음 안내</b> &nbsp;${esc(d.noisy)}</div>`:''}
+    <div style="font-size:${fz(15)};line-height:1.9;color:#3A4150;margin-top:22px;white-space:pre-wrap">${esc(d.close)}</div>
     <div style="flex:1"></div>
     <div style="width:340px;max-width:100%;border:1px solid #DCE5DB;border-radius:14px;overflow:hidden">
       <div style="background:#3E5A43;color:#fff;padding:12px 18px;display:flex;align-items:center;-webkit-print-color-adjust:exact;print-color-adjust:exact">
-        <div style="font-size:16px;font-weight:800">${esc(d.manager||co.ceo||'')}</div>
-        <div style="margin-left:auto;font-size:11px;font-weight:700;background:rgba(255,255,255,.15);padding:4px 10px;border-radius:6px;-webkit-print-color-adjust:exact;print-color-adjust:exact">현장 책임 · 팀장</div>
+        <div style="font-size:${fz(16)};font-weight:800">${esc(d.manager||co.ceo||'')}</div>
+        <div style="margin-left:auto;font-size:${fz(11)};font-weight:700;background:rgba(255,255,255,.15);padding:4px 10px;border-radius:6px;-webkit-print-color-adjust:exact;print-color-adjust:exact">현장 책임 · 팀장</div>
       </div>
       <div style="padding:12px 18px 14px">
-        <div style="font-weight:800;font-size:13.5px;color:#1F2430;padding-bottom:9px;border-bottom:1px solid #EDF0F4;margin-bottom:8px">${esc((co.name||'').split('(')[0].trim())}</div>
+        <div style="font-weight:800;font-size:${fz(13.5)};color:#1F2430;padding-bottom:9px;border-bottom:1px solid #EDF0F4;margin-bottom:8px">${esc((co.name||'').split('(')[0].trim())}</div>
         ${crow('전화',esc(d.contact))}
         ${crow('이메일',esc(co.email||''))}
         ${crow('주소',esc(co.addr||''))}
@@ -1617,6 +2130,19 @@ function openNotice(){
   ov.innerHTML=`<div class="modal" style="width:min(660px,100%)"><h2>아파트 공사 안내문</h2>
     <div class="msub">엘리베이터·1층 현관에 게시할 A4 안내문을 만듭니다. 공사 시작 <b>최소 7일 전</b> 게시를 권장합니다.</div>
     <div class="form">
+      <div class="field" style="grid-column:1/-1"><label>상단 로고 (비우면 표시 안 함)</label>
+        <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+          <input type="hidden" id="ntLogo" value="${esc(d.logo||'')}">
+          <img id="ntLogoPrev" src="${esc(d.logo||'')}" style="height:44px;max-width:180px;object-fit:contain;border:1px solid var(--line);border-radius:8px;background:#fff;padding:4px;${d.logo?'':'display:none'}">
+          <label class="btn sm">로고 선택<input type="file" accept="image/*" hidden id="ntLogoPick"></label>
+          <button type="button" class="btn sm ghost" id="ntLogoClear" style="color:var(--bad);${d.logo?'':'display:none'}">삭제</button>
+        </div><span class="hint">회사 정보에 로고를 등록해두면 자동으로 불러옵니다</span></div>
+      <div class="field"><label>로고 크기 (가로 px)</label><input type="number" id="ntLogoW" value="${+d.logoW||140}" min="24" max="600" step="10"></div>
+      <div class="field"><label>글씨 크기 (%)</label><input type="number" id="ntFont" value="${+d.fontScale||100}" min="50" max="200" step="5"><span class="hint">기본 100 — 크게 120, 작게 90</span></div>
+      <div class="field"><label>로고 위치</label><select id="ntLogoPos">
+        <option value="left" ${d.logoPos!=='center'&&d.logoPos!=='right'?'selected':''}>왼쪽</option>
+        <option value="center" ${d.logoPos==='center'?'selected':''}>가운데</option>
+        <option value="right" ${d.logoPos==='right'?'selected':''}>오른쪽</option></select></div>
       <div class="field"><label>공사 세대 (동·호)</label><input id="ntUnit" value="${esc(d.unit)}" placeholder="예: 101동 1001호"></div>
       <div class="field"><label>현장 책임자</label><input id="ntMgr" value="${esc(d.manager)}"></div>
       <div class="field"><label>시작일</label><input type="date" id="ntStart" value="${esc(d.start)}"></div>
@@ -1628,18 +2154,39 @@ function openNotice(){
       <div class="field" style="grid-column:1/-1"><label>맺음말</label><textarea id="ntClose" style="min-height:74px">${esc(d.close)}</textarea></div>
       <div class="field" style="grid-column:1/-1"><label>문의 연락처</label><input id="ntContact" value="${esc(d.contact)}"></div>
     </div>
-    <div class="modal-foot"><span></span><div class="right"><button class="btn" id="ntCancel">닫기</button><button class="btn green" id="ntPrev">${svg(IC.print)}미리보기 · 인쇄</button></div></div></div>`;
+    <div class="modal-foot"><span></span><div class="right"><button class="btn" id="ntCancel">닫기</button><button class="btn" id="ntWord">워드(.doc) 저장</button><button class="btn green" id="ntPrev">${svg(IC.print)}미리보기 · 인쇄</button></div></div></div>`;
   document.body.appendChild(ov);
   const close=()=>ov.remove();
   ov.addEventListener('mousedown',e=>{if(e.target===ov)close();});
   document.addEventListener('keydown',function k(e){if(e.key==='Escape'){close();document.removeEventListener('keydown',k);}});
   ov.querySelector('#ntCancel').onclick=close;
-  ov.querySelector('#ntPrev').onclick=()=>{
+  ov.querySelector('#ntLogoPick').onchange=async e=>{
+    const f=e.target.files[0];if(!f)return;
+    const du=await compressImage(f,900,f.type==='image/png');
+    if(!du){alert('이미지를 읽지 못했습니다.');return;}
+    ov.querySelector('#ntLogo').value=du;
+    const pv=ov.querySelector('#ntLogoPrev');pv.src=du;pv.style.display='';
+    ov.querySelector('#ntLogoClear').style.display='';
+  };
+  ov.querySelector('#ntLogoClear').onclick=()=>{
+    ov.querySelector('#ntLogo').value='';
+    ov.querySelector('#ntLogoPrev').style.display='none';
+    ov.querySelector('#ntLogoClear').style.display='none';
+  };
+  const collect=()=>{
     const v=id=>ov.querySelector(id).value;
     p.notice={unit:v('#ntUnit').trim(),manager:v('#ntMgr').trim(),start:v('#ntStart'),end:v('#ntEnd'),
       hours:v('#ntHours').trim(),works:v('#ntWorks').trim(),greet:v('#ntGreet').trim(),
-      noisy:v('#ntNoisy').trim(),close:v('#ntClose').trim(),contact:v('#ntContact').trim()};
-    save(); close();
+      noisy:v('#ntNoisy').trim(),close:v('#ntClose').trim(),contact:v('#ntContact').trim(),
+      logo:v('#ntLogo'),logoW:+v('#ntLogoW')||140,logoPos:v('#ntLogoPos'),fontScale:+v('#ntFont')||100};
+    save();
+  };
+  ov.querySelector('#ntWord').onclick=()=>{
+    collect();
+    downloadWordDoc(`공사안내문_${safeName(p.info.name||'현장')}_${todayStr()}.doc`,noticeWordHtml(p.notice));
+  };
+  ov.querySelector('#ntPrev').onclick=()=>{
+    collect(); close();
     showPreview('공사 안내문',noticeSheet(p.notice),false);
   };
 }
@@ -1906,6 +2453,20 @@ function vSettle(c){
     <div class="kpi"><div class="k">예상 이익</div><div class="v num" style="color:${profit<0?'var(--bad)':'var(--good)'}">${won(profit)}</div><div class="s">이익률 ${margin}%</div></div>
     <div class="kpi"><div class="k">이익률</div><div class="v num" style="color:${margin<0?'var(--bad)':'var(--good)'}">${margin}<small>%</small></div><div class="bar"><i style="width:${Math.max(0,Math.min(100,margin))}%;background:${margin<0?'var(--bad)':'var(--good)'}"></i></div></div>
   </div>
+  ${(()=>{ /* 지출을 카드 · 입금(계좌이체) · 노무로 구분 */
+    const mSum=m2=>p.expenses.filter(e=>e.method===m2).reduce((s,e)=>s+(+e.amount||0),0);
+    const cardT=mSum('카드'),transT=mSum('계좌이체'),etcT=spent-cardT-transT;
+    const laborT=(p.workers||[]).reduce((s,w)=>s+(+w.labor||0)+(+w.expense||0),0);
+    const grand=spent+laborT;
+    const tile=(k,v,s)=>`<div class="kpi"><div class="k">${k}</div><div class="v num">${won(v)}</div><div class="s">${s}</div></div>`;
+    return`<div class="card"><div class="card-h"><span class="ct">카드 · 입금 · 노무 구분</span><span class="cs">지출은 결제수단 기준, 노무는 노무비 탭 기록 기준</span></div>
+      <div class="pad" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px">
+        ${tile('카드',cardT,grand?Math.round(cardT/grand*100)+'%':'')}
+        ${tile('입금 (계좌이체)',transT,grand?Math.round(transT/grand*100)+'%':'')}
+        ${tile('노무',laborT,grand?Math.round(laborT/grand*100)+'%'+' · 노무비+경비':'')}
+        ${etcT?tile('현금 · 기타',etcT,grand?Math.round(etcT/grand*100)+'%':''):''}
+        <div class="kpi tint"><div class="k">합계 (지출+노무)</div><div class="v num">${won(grand)}</div><div class="s">지출 ${won(spent)} + 노무 ${won(laborT)}</div></div>
+      </div></div>`;})()}
   <div class="card"><div class="card-h"><span class="ct">종류별 지출 구성</span></div><div class="pad" style="display:flex;flex-direction:column;gap:11px">
     ${Object.entries(byKind).sort((a,b)=>b[1]-a[1]).map(([k,v])=>`<div style="display:grid;grid-template-columns:70px 1fr 130px;align-items:center;gap:12px">
       <span class="tag">${esc(k)}</span><div class="bar" style="height:8px;background:var(--line);border-radius:4px;overflow:hidden"><i style="display:block;height:100%;width:${spent?Math.round(v/spent*100):0}%;background:var(--accent);border-radius:4px"></i></div>
@@ -2041,6 +2602,7 @@ function estEditor(c,p,est){
     <div><div class="t">${EST_TYPE[est.type]} <span class="sub num">${esc(est.no)}</span></div></div>
     <div class="spacer"></div>
     <button class="btn sm" data-company>회사 정보</button>
+    <button class="btn" id="estXls">엑셀</button>
     <button class="btn accent" id="estPreview">${svg(IC.print)}미리보기 · 보내기</button>
   </div>
   <div class="card"><div class="pad" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:10px">
@@ -2064,6 +2626,7 @@ function estEditor(c,p,est){
   document.getElementById('estBack').onclick=()=>{state.estOpen=null;render();};
   c.querySelector('[data-company]').onclick=()=>openForm('company',DB.company);
   document.getElementById('estPreview').onclick=()=>openEstPreview(est);
+  document.getElementById('estXls').onclick=()=>exportEstXlsx(est);
   c.querySelectorAll('[data-estf]').forEach(inp=>inp.onchange=()=>{est[inp.dataset.estf]=inp.value;save();refreshEst(c,est);});
   c.querySelectorAll('[data-rate]').forEach(inp=>inp.onchange=()=>{est.rates[inp.dataset.rate]=inp.value;save();refreshEst(c,est);});
   const rm=document.getElementById('estRemarks');rm.onchange=()=>{est.remarks=rm.value;save();};
@@ -2157,7 +2720,7 @@ function estGapjiHtml(est,cal){
     <div class="eg-remark"><b>비고/REMARK</b>
       <div style="display:flex;gap:20px;align-items:flex-start">
         <div style="flex:1;white-space:pre-line">${esc(est.remarks||'')}</div>
-        <div class="rm-sign2">성&nbsp;&nbsp;명: &nbsp;<b>${esc(co.ceo||'')}</b>&nbsp;&nbsp;<span class="stampw">(인)${STAMP_SVG(52)}</span></div>
+        <div class="rm-sign2">성&nbsp;&nbsp;명: &nbsp;<b>${esc(co.ceo||'')}</b>&nbsp;&nbsp;(인)</div>
       </div>
       <div class="rm-valid">※ 본 견적서는 발행일로 ${est.validDays||30}일 유효합니다.</div>
       <div class="rm-reg">Company Registration No. ${esc(co.reg||'')} — All rights reserved.</div>
@@ -2229,9 +2792,25 @@ function vHome(c){
   /* 이름·데이터가 없는 "새 프로젝트"는 아직 현장이 아니므로 집계·목록에서 제외 */
   const isBlank=p=>((p.info.name||'').trim()==='새 프로젝트')&&!(p.schedule||[]).length&&!(p.expenses||[]).length&&!(p.estimates||[]).length&&!(p.contracts||[]).length&&!(p.logs||[]).length&&!+p.info.amount;
   const act=DB.projects.filter(p=>!isArchived(p)&&!isBlank(p));
-  const blanks=DB.projects.filter(p=>!isArchived(p)&&isBlank(p));
   const arch=DB.projects.filter(isArchived);
   const allTodos=act.reduce((s,p)=>s+(p.todos||[]).filter(t=>!t.done).length,0);
+  /* 날짜별 메모 */
+  DB.homeMemos=DB.homeMemos||{};
+  const mdate=state.memoDate||today;
+  const memoDates=Object.keys(DB.homeMemos).filter(dd=>(DB.homeMemos[dd]||'').trim()).sort().reverse().slice(0,14);
+  /* 현장별 할 일 — 어제·오늘 것만 홈에 표시 */
+  const yest=dkey(new Date(new Date(today+'T00:00:00').getTime()-86400000));
+  const htItem=(p,t)=>`<div class="todo ${t.done?'done':''}" style="padding:7px 10px">
+    <div class="cb" data-ht="${p.id}|${t.id}">${t.done?svg(IC.check):''}</div>
+    <div style="flex:1"><div class="tx">${esc(t.text)}</div>
+      <div class="meta"><b style="cursor:pointer" data-goproj2="${p.id}">${esc(p.info.name)}</b>${t.trade?`<span>${esc(t.trade)}</span>`:''}</div></div></div>`;
+  const htSec=(label,dd)=>{
+    const items=[];act.forEach(p=>(p.todos||[]).forEach(t=>{if(t.date===dd)items.push([p,t]);}));
+    if(!items.length)return'';
+    items.sort((a,b)=>(a[1].done?1:0)-(b[1].done?1:0));
+    return`<div class="sub" style="font-size:11px;font-weight:700;letter-spacing:.06em;margin-top:2px">${label} <span class="num">${fdate(dd)}</span> · ${items.filter(x=>!x[1].done).length}건 남음</div>`+items.map(x=>htItem(x[0],x[1])).join('');
+  };
+  const homeTodoHtml=htSec('오늘',today)+htSec('어제',yest);
   const runningPh=act.reduce((s,p)=>s+(p.schedule||[]).filter(x=>x.start<=today&&today<=x.end&&x.status!=='완료').length,0);
   const cards=act.map(p=>{
     const i=p.info, sch=(p.schedule||[]);
@@ -2281,22 +2860,31 @@ function vHome(c){
     <div class="kpi"><div class="k">완료·보관 현장</div><div class="v num">${arch.length}<small>곳</small></div></div>
   </div>
   <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:14px;margin-bottom:14px">
-    <div class="card"><div class="card-h"><span class="ct">메모</span><span class="cs">자유롭게 적어두세요 — 자동 저장</span></div>
-      <div class="pad" style="padding-top:8px"><textarea id="homeMemo" placeholder="예: 다음주 목자재 발주 확인, 세금계산서 발행, 김실장 미팅…" style="width:100%;min-height:132px;border:1px solid var(--line);border-radius:10px;background:var(--surface-2);color:inherit;padding:10px 12px;font:inherit;font-size:13px;line-height:1.7;resize:vertical">${esc(DB.homeMemo||'')}</textarea></div></div>
-    <div class="card"><div class="card-h"><span class="ct">현장별 메모</span><span class="cs">각 현장의 상황 메모 — 여기서 바로 수정됩니다</span></div>
-      <div class="pad" style="padding-top:8px;display:flex;flex-direction:column;gap:9px">
-        ${act.map(p=>`<div style="display:flex;align-items:center;gap:10px">
-          <b style="flex:none;width:112px;font-size:12.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;cursor:pointer" data-goproj2="${p.id}" title="현장 열기">${esc(p.info.name)}</b>
-          <input class="memoinput" data-pmemo="${p.id}" placeholder="상황 메모 (예: 입주 8/20 예정)" value="${esc(p.info.statusMemo||'')}" style="flex:1"></div>`).join('')||'<div class="sub">진행 중인 현장이 없습니다.</div>'}
+    <div class="card"><div class="card-h"><span class="ct">메모</span><span class="cs">날짜별 자동 저장 — 날짜를 바꿔 지난 메모를 볼 수 있어요</span>
+        <div class="spacer" style="flex:1"></div><input type="date" id="memoDate" class="memoinput" style="width:auto" value="${esc(mdate)}"></div>
+      <div class="pad" style="padding-top:8px">
+        <textarea id="homeMemo" placeholder="예: 다음주 목자재 발주 확인, 세금계산서 발행, 김실장 미팅…" style="width:100%;min-height:132px;border:1px solid var(--line);border-radius:10px;background:var(--surface-2);color:inherit;padding:10px 12px;font:inherit;font-size:13px;line-height:1.7;resize:vertical">${esc(DB.homeMemos[mdate]||'')}</textarea>
+        ${memoDates.length?`<div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:9px">${memoDates.map(dd=>`<button class="tag" data-mdate="${dd}" style="cursor:pointer;border:1px solid var(--line);background:${dd===mdate?'var(--surface-2)':'transparent'};font-weight:${dd===mdate?'700':'500'}">${fdate(dd)}${dd===today?' · 오늘':''}</button>`).join('')}</div>`:''}
+      </div></div>
+    <div class="card"><div class="card-h"><span class="ct">현장별 할 일</span><span class="cs">어제 · 오늘 — 지난 항목은 현장관리 탭에서</span></div>
+      <div class="pad" style="padding-top:8px;display:flex;flex-direction:column;gap:6px">
+        ${homeTodoHtml||'<div class="sub" style="padding:6px 0">어제·오늘 할 일이 없습니다. 현장관리 탭에서 날짜와 함께 등록하세요.</div>'}
       </div></div>
   </div>
-  ${blanks.length?`<div class="tip">📁 아직 정보를 입력하지 않은 <b>새 프로젝트 ${blanks.length}개</b>는 집계에서 제외했어요. 상단 현장 선택에서 열어 정보를 입력하거나, 정보 수정에서 삭제하세요.</div>`:''}
   ${cards||`<div class="card">${emptyB('진행 중인 현장이 없습니다.','')}</div>`}`;
   c.querySelectorAll('[data-goproj]').forEach(cd=>cd.onclick=()=>{DB.active=cd.dataset.goproj;state.tab='schedule';save();render();});
+  /* 날짜별 메모 — 입력 자동저장, 날짜 이동 시 해당 날짜 메모 로드 */
   const hm=document.getElementById('homeMemo');let hmT=null;
-  hm.oninput=()=>{DB.homeMemo=hm.value;clearTimeout(hmT);hmT=setTimeout(save,600);};
-  c.querySelectorAll('[data-pmemo]').forEach(inp=>inp.onchange=()=>{const p=DB.projects.find(x=>x.id===inp.dataset.pmemo);if(p){p.info.statusMemo=inp.value;save();}});
-  c.querySelectorAll('[data-goproj2]').forEach(b=>b.onclick=()=>{DB.active=b.dataset.goproj2;state.tab='schedule';save();render();});
+  hm.oninput=()=>{const v=hm.value;if(v)DB.homeMemos[mdate]=v;else delete DB.homeMemos[mdate];clearTimeout(hmT);hmT=setTimeout(save,600);};
+  const md=document.getElementById('memoDate');
+  md.onchange=()=>{if(md.value){state.memoDate=md.value;render();}};
+  c.querySelectorAll('[data-mdate]').forEach(b=>b.onclick=()=>{state.memoDate=b.dataset.mdate;render();});
+  c.querySelectorAll('[data-ht]').forEach(b=>b.onclick=()=>{
+    const[pid,tid]=b.dataset.ht.split('|');
+    const pr=DB.projects.find(x=>x.id===pid);const t=pr&&(pr.todos||[]).find(x=>x.id===tid);
+    if(t){t.done=!t.done;save();render();}
+  });
+  c.querySelectorAll('[data-goproj2]').forEach(b=>b.onclick=e=>{e.stopPropagation();DB.active=b.dataset.goproj2;state.tab='schedule';save();render();});
 }
 
 /* ===== 자재·노무 단가 DB ===== */
@@ -2413,8 +3001,13 @@ function vPrice(c){
 function openPricePicker(onPick){
   DB.priceDB=DB.priceDB||[];
   const ov=document.createElement('div');ov.className='overlay';
+  /* 카테고리 칩 — 등록된 분류를 PRICE_CATS 순서로 정렬해 노출 */
+  const cats=[...new Set(DB.priceDB.map(x=>x.cat||'미분류'))]
+    .sort((a,b)=>{const ia=PRICE_CATS.indexOf(a),ib=PRICE_CATS.indexOf(b);return(ia<0?99:ia)-(ib<0?99:ib)||a.localeCompare(b);});
+  let catF='전체';
+  const catBar=()=>['전체',...cats].map(cc=>`<button class="btn sm ${cc===catF?'green':''}" data-ppcat="${esc(cc)}" style="padding:4px 11px">${esc(cc)}</button>`).join('');
   const build=q=>{
-    const rows=DB.priceDB.filter(x=>!q||[x.cat,x.name,x.spec].join(' ').includes(q));
+    const rows=DB.priceDB.filter(x=>(catF==='전체'||(x.cat||'미분류')===catF)&&(!q||[x.cat,x.name,x.spec].join(' ').includes(q)));
     return rows.length?`<table><thead><tr><th>분류</th><th>품명</th><th>규격</th><th class="c">단위</th><th class="r">자재</th><th class="r">노무</th><th></th></tr></thead>
       <tbody>${rows.map(x=>`<tr><td><span class="tag">${esc(x.cat||'—')}</span></td><td class="strong">${esc(x.name)}</td><td class="sub num">${esc(x.spec||'')}</td>
       <td class="c sub">${esc(x.unit||'')}</td><td class="r num sub">${+x.mp?numf(+x.mp):'—'}</td><td class="r num sub">${+x.lp?numf(+x.lp):'—'}</td>
@@ -2422,23 +3015,27 @@ function openPricePicker(onPick){
       :`<div class="empty" style="padding:30px">검색 결과가 없습니다.<br><span class="sub">자재·노무 탭에서 단가를 먼저 등록해 주세요.</span></div>`;
   };
   ov.innerHTML=`<div class="modal" style="width:min(680px,100%)"><h2>단가 DB에서 담기</h2>
-    <div class="msub">담기를 누르면 바로 추가됩니다. 여러 개를 연속으로 담을 수 있어요.</div>
+    <div class="msub">분류를 고르거나 검색해서, 담기를 누르면 바로 추가됩니다. 여러 개를 연속으로 담을 수 있어요.</div>
     <div style="padding:10px 22px 0"><input class="oh" id="ppQ" placeholder="검색 (품명·규격·분류)" style="width:100%"></div>
-    <div style="padding:12px 22px;overflow-y:auto;max-height:52vh" id="ppList">${build('')}</div>
+    <div id="ppCats" style="padding:10px 22px 0;display:flex;gap:6px;flex-wrap:wrap">${catBar()}</div>
+    <div style="padding:12px 22px;overflow-y:auto;max-height:46vh" id="ppList">${build('')}</div>
     <div class="modal-foot"><span class="sub" id="ppCnt"></span><div class="right"><button class="btn green" id="ppDone">완료</button></div></div></div>`;
   document.body.appendChild(ov);
   let added=0;
   const close=()=>{ov.remove();if(added)render();};
   ov.addEventListener('mousedown',e=>{if(e.target===ov)close();});
   ov.querySelector('#ppDone').onclick=close;
-  const list=ov.querySelector('#ppList'),qi=ov.querySelector('#ppQ'),cnt=ov.querySelector('#ppCnt');
+  const list=ov.querySelector('#ppList'),qi=ov.querySelector('#ppQ'),cnt=ov.querySelector('#ppCnt'),catsEl=ov.querySelector('#ppCats');
   const wire=()=>list.querySelectorAll('[data-pick]').forEach(b=>b.onclick=()=>{
     const it=DB.priceDB.find(x=>x.id===b.dataset.pick);if(!it)return;
     onPick(it);added++;cnt.textContent=added+'개 담음';
     b.textContent='✓';b.disabled=true;setTimeout(()=>{b.textContent='담기';b.disabled=false;},700);
   });
-  qi.oninput=()=>{list.innerHTML=build(qi.value.trim());wire();};
-  wire();if(!IS_TOUCH)qi.focus();
+  const refresh=()=>{list.innerHTML=build(qi.value.trim());wire();};
+  const wireCats=()=>catsEl.querySelectorAll('[data-ppcat]').forEach(b=>b.onclick=()=>{
+    catF=b.dataset.ppcat;catsEl.innerHTML=catBar();wireCats();refresh();});
+  qi.oninput=refresh;
+  wireCats();wire();if(!IS_TOUCH)qi.focus();
 }
 
 /* ===== 계약서 (contracts) ===== */
@@ -2519,6 +3116,7 @@ function ctrEditor(c,p,ctr){
     <div class="spacer"></div>
     <button class="btn sm" id="ctrReload">현장 정보 다시 불러오기</button>
     <button class="btn sm" data-company>회사 정보</button>
+    <button class="btn" id="ctrWord">워드(.doc)</button>
     <button class="btn accent" id="ctrPreview">${svg(IC.print)}미리보기 · 보내기</button>
   </div>
   <div class="card"><div class="card-h"><span class="ct">계약 내용</span></div>
@@ -2551,6 +3149,7 @@ function ctrEditor(c,p,ctr){
   document.getElementById('ctrBack').onclick=()=>{state.ctrOpen=null;render();};
   c.querySelector('[data-company]').onclick=()=>openForm('company',DB.company);
   document.getElementById('ctrPreview').onclick=()=>openCtrPreview(ctr);
+  document.getElementById('ctrWord').onclick=()=>exportCtrWord(ctr);
   document.getElementById('ctrReload').onclick=()=>{
     if(!confirm('공사명·주소·기간·금액·고객명을 현장 정보로 다시 채울까요?'))return;
     const i=p.info,nm=i.name||'';
@@ -2653,6 +3252,14 @@ function openCtrPreview(ctr){
   const e=ctrEff(ctr);
   showPreview('공사계약서',[ctrCoverHtml(e),ctrMainHtml(e),ctrSignHtml(e),...ctrTermsPages()],false);
 }
+/* 계약서 → 워드(.doc): 페이지를 페이지 나눔으로 이어붙이고, 워드가 못 읽는 SVG(로고·도장)는 제외 */
+function exportCtrWord(ctr){
+  const e=ctrEff(ctr);
+  const html=[ctrCoverHtml(e),ctrMainHtml(e),ctrSignHtml(e),...ctrTermsPages()]
+    .map((pg,i)=>`<div${i?' style="page-break-before:always"':''}>${pg}</div>`).join('')
+    .replace(/<svg[\s\S]*?<\/svg>/g,'');
+  downloadWordDoc(`공사계약서_${safeName(proj().info.name||'현장')}_${todayStr()}.doc`,html);
+}
 
 /* ===== forms ===== */
 const FORMS={
@@ -2684,6 +3291,19 @@ const FORMS={
   logs:{title:'현장일지',sub:'현장 상황을 기록하고 그날 찍은 사진을 함께 첨부합니다.',fields:[
     {k:'date',l:'날짜',t:'date',req:1},{k:'author',l:'작성자'},{k:'title',l:'제목',req:1,full:1},{k:'body',l:'내용',t:'textarea',full:1,req:1},
     {k:'photos',l:'사진',t:'images',full:1}]},
+  workerdb:{title:'작업자 명부',sub:'자주 함께 일하는 작업자 정보입니다. 현장에서 출력 체크할 때 자동으로 불러옵니다.',fields:[
+    {k:'name',l:'이름',req:1},{k:'trade',l:'공정·직종',dl:'trades',hint:'예: 목공, 타일'},
+    {k:'labor',l:'기본 노임단가 (일당)',t:'number',money:1},
+    {k:'ssn',l:'주민(외국인)등록번호'},{k:'phone',l:'연락처'},
+    {k:'bank',l:'은행명'},{k:'account',l:'계좌번호'},
+    {k:'address',l:'주소',full:1},{k:'memo',l:'비고',full:1}]},
+  workers:{title:'작업자 출력',sub:'그날 들어온 작업자를 기록합니다. 노무비 탭에서 월별 일용노무비 지급명세서로 정리됩니다.',fields:[
+    {k:'date',l:'출력일',t:'date',req:1},{k:'name',l:'이름',req:1},
+    {k:'trade',l:'공정·직종',dl:'trades',hint:'예: 목공, 타일'},
+    {k:'labor',l:'노임단가 (일당)',t:'number',money:1},{k:'expense',l:'경비',t:'number',money:1,hint:'식대·주차비 등 별도 지급분'},
+    {k:'ssn',l:'주민(외국인)등록번호',hint:'예: 800101-1234567'},{k:'phone',l:'연락처'},
+    {k:'bank',l:'은행명'},{k:'account',l:'계좌번호'},
+    {k:'address',l:'주소',full:1},{k:'memo',l:'비고',full:1}]},
   expenses:{title:'지출',sub:'현장 지출 내역을 입력합니다.',fields:[
     {k:'date',l:'날짜',t:'date',req:1},{k:'kind',l:'종류',t:'select',opt:EXP_KINDS,req:1},
     {k:'phase',l:'공정',dl:'trades',hint:'기본 공정에서 선택'},{k:'vendor',l:'거래처'},{k:'desc',l:'내역',full:1},
@@ -2696,7 +3316,9 @@ const FORMS={
     {k:'addr',l:'주소',full:1},{k:'tel',l:'전화'},{k:'email',l:'이메일'},
     {k:'biz',l:'업태'},{k:'bizType',l:'종목'},{k:'bank',l:'입금계좌',full:1,hint:'계약서에 표시됩니다'},
     {k:'logo',l:'로고 이미지 (문서 표지·계약서에 사용)',t:'image',full:1},
-    {k:'logoSize',l:'로고 크기 %',t:'number',hint:'기본 100 — 크게 150, 작게 70 등으로 조절'}]},
+    {k:'logoSize',l:'로고 크기 %',t:'number',hint:'기본 100 — 크게 150, 작게 70 등으로 조절'},
+    {k:'poLogoPos',l:'발주서 하단 로고 위치',t:'select',opt:['왼쪽','가운데','오른쪽','안 넣음']},
+    {k:'schedLogoPos',l:'공사일정표 로고 위치',t:'select',opt:['오른쪽','가운데','왼쪽','안 넣음']}]},
   coexp:{title:'회사 지출',sub:'임대료·차량·보험처럼 특정 현장에 속하지 않는 회사 공통 지출입니다.',fields:[
     {k:'date',l:'날짜',t:'date',req:1},{k:'kind',l:'종류',t:'select',opt:EXP_KINDS,req:1},
     {k:'vendor',l:'거래처'},{k:'desc',l:'내역',full:1},
@@ -2711,10 +3333,11 @@ const FORMS={
     {k:'items',l:'주요 품목',full:1,hint:'예: 합판·각재·석고보드'},{k:'memo',l:'비고',full:1}]},
 };
 /* 프로젝트가 아닌 DB(회사) 레벨에 저장되는 폼 타입 */
-const DB_FORM_TARGET={price:'priceDB',coexp:'coExpenses',vendors:'vendors'};
+const DB_FORM_TARGET={price:'priceDB',coexp:'coExpenses',vendors:'vendors',workerdb:'workersDB'};
 let overlayEl=null;
-function openForm(type,existing){
-  const cfg=FORMS[type],editing=!!existing,data=existing||{};
+function openForm(type,existing,preset){
+  /* preset: 새 항목의 기본값 미리 채움 (예: 일지 날짜칸에서 지출·작업자 추가) */
+  const cfg=FORMS[type],editing=!!existing,data=existing||preset||{};
   const fh=cfg.fields.map(f=>{const val=data[f.k]!=null?data[f.k]:(f.t==='date'&&!editing&&(f.k==='date')?todayStr():'');
     let input;
     if(f.t==='select')input=`<select name="${f.k}">${f.opt.map(o=>`<option ${String(val)===o?'selected':''}>${o}</option>`).join('')}</select>`;
@@ -2796,6 +3419,7 @@ function openForm(type,existing){
     else if(DB_FORM_TARGET[type]&&!editing){obj.id=uid();(DB[DB_FORM_TARGET[type]]=DB[DB_FORM_TARGET[type]]||[]).push(obj);}
     else if(editing)Object.assign(existing,obj);
     else{const p=proj();obj.id=uid();(p[type]=p[type]||[]).push(obj);}
+    if(type==='workers')upsertWorkerDB(editing?existing:obj); /* 현장 출력 기록 → 작업자 명부 자동 반영 */
     save();close();render();
   };
   if(!IS_TOUCH)setTimeout(()=>{const el=overlayEl?.querySelector('input,select,textarea');el&&el.focus();},30);
@@ -2803,7 +3427,7 @@ function openForm(type,existing){
 
 /* ===== new project ===== */
 function newProject(){const id=uid();
-  DB.projects.push({id,info:{name:'새 프로젝트',client:'',contact:'',address:'',area:'',siteInfo:'',manager:'',entryNo:'',amount:0,vat:'별도',start:'',end:'',status:'진행중',statusMemo:'',memo:''},todos:[],schedule:[],payments:[],materials:[],orders:[],logs:[],photos:[],expenses:[],as:[],files:[]});
+  DB.projects.push({id,info:{name:'새 프로젝트',client:'',contact:'',address:'',area:'',siteInfo:'',manager:'',entryNo:'',amount:0,vat:'별도',start:'',end:'',status:'진행중',statusMemo:'',memo:''},todos:[],schedule:[],payments:[],materials:[],orders:[],logs:[],photos:[],expenses:[],workers:[],as:[],files:[]});
   DB.active=id;state.tab='schedule';save();render();openForm('info',proj().info);}
 
 /* ===== theme ===== */
